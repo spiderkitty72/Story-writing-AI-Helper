@@ -1,0 +1,49 @@
+# Global settings for Story Writing AI Helper.
+# Environment variables of the form ${NAME} or ${NAME:-default} are expanded.
+
+# Where books are stored. Each book is a folder of Markdown chapter files.
+data_dir: ${DATA_DIR:-./data}
+
+# Provider that agents use when they don't name one.
+default_provider: ollama
+
+providers:
+  ollama:
+    type: ollama
+    base_url: ${OLLAMA_URL:-http://localhost:11434}
+    model: ${OLLAMA_MODEL:-llama3.1:8b}
+    # Context window to request from Ollama (tokens). Keep it larger than
+    # chunk_tokens + overlap + knowledge_tokens + room for the answer.
+    num_ctx: 8192
+    timeout: 600
+
+  claude:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY:-}
+    model: ${CLAUDE_MODEL:-claude-sonnet-5-5}
+    max_tokens: 8000
+    timeout: 300
+
+  gemini:
+    type: gemini
+    api_key: ${GEMINI_API_KEY:-}
+    model: ${GEMINI_MODEL:-gemini-2.5-flash}
+    max_tokens: 8000
+    timeout: 300
+
+  # A fake provider that returns the text unchanged. Handy for trying the UI
+  # without any model installed.
+  echo:
+    type: echo
+
+# Rolling context window. Sizes are approximate tokens (about 4 characters each).
+chunking:
+  # How much text is sent to the AI to edit in one request.
+  chunk_tokens: 1200
+  # How much text before (and half as much after) each chunk is sent as
+  # read-only context so the AI knows what surrounds it.
+  overlap_tokens: 300
+  # Maximum size of the knowledge-graph summary included with each request.
+  knowledge_tokens: 600
+  # Characters per token used for the estimate.
+  chars_per_token: 4
