@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app import knowledge as kg
+from app.auth import current_user
 from app.chunking import chunk_text
 from app.config import Config, WorkflowStep
 from app.diffing import apply_decisions, count_changes, diff_segments
@@ -58,6 +59,7 @@ class Job:
     error: str = ""
     cancelled: bool = False
     started: float = field(default_factory=time.time)
+    owner: int | None = None  # id of the user who started it
 
     def public(self) -> dict[str, Any]:
         return {k: getattr(self, k) for k in
@@ -109,7 +111,8 @@ class Engine:
         raise ValueError("Choose an agent or a workflow")
 
     def _start(self, kind: str, label: str, coro_fn) -> Job:
-        job = Job(id=uuid.uuid4().hex[:10], kind=kind, label=label)
+        user = current_user.get()
+        job = Job(id=uuid.uuid4().hex[:10], kind=kind, label=label, owner=user.id if user else None)
         self.jobs[job.id] = job
 
         async def runner():
@@ -127,7 +130,7 @@ class Engine:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         # forget old jobs
-        for old in sorted(self.jobs.values(), key=lambda j: j.started)[:-50]:
+        for old in sorted(self.jobs.values(), key=lambda j: j.started)[:-200]:
             self.jobs.pop(old.id, None)
         return job
 

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Account · Story Helper</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/account.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">✒️ Story Helper</div>
+  <a class="button ghost small" href="/">← Back to writing</a>
+  <span class="spacer"></span>
+  <div id="userMenu" class="user-menu"></div>
+</header>
+<div class="account-wrap">
+  <div class="panel">
+    <h3>Change your password</h3>
+    <form id="pwForm">
+      <input type="text" id="pwUser" autocomplete="username" hidden>
+      <label>Current password <input id="pwCurrent" type="password" autocomplete="current-password" required></label>
+      <label>New password (at least 10 characters) <input id="pwNew" type="password" autocomplete="new-password" minlength="10" required></label>
+      <label>Repeat new password <input id="pwRepeat" type="password" autocomplete="new-password" minlength="10" required></label>
+      <p id="pwMsg" class="auth-error" role="status"></p>
+      <div class="row end"><button type="submit" class="primary small">Change password</button></div>
+    </form>
+    <p class="muted small-text">Changing your password signs you out on every other device.</p>
+  </div>
+
+  <div id="adminPanel" class="panel" hidden>
+    <h3>Users</h3>
+    <table class="table"><thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+      <tbody id="userTable"></tbody></table>
+    <h3>Add a user</h3>
+    <form id="newUserForm">
+      <div class="row wrap">
+        <label>Username <input id="nuName" autocomplete="off" autocapitalize="none" required></label>
+        <label>Password <input id="nuPass" type="password" autocomplete="new-password" minlength="10" required></label>
+      </div>
+      <label class="toggle"><input type="checkbox" id="nuAdmin"> Admin (can manage users and the AI settings)</label>
+      <p id="nuMsg" class="auth-error" role="status"></p>
+      <div class="row end"><button type="submit" class="primary small">Create user</button></div>
+    </form>
+    <p class="muted small-text">Each user has their own books. Deleting a user keeps their files on disk.</p>
+  </div>
+</div>
+<script src="/static/user-menu.js"></script>
+<script src="/static/account.js"></script>
+</body>
+</html>
