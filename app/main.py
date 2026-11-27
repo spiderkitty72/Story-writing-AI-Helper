@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app import auth
 from app import config as config_mod
 from app import knowledge as kg
 from app.engine import EditRequest, Engine
@@ -23,17 +24,37 @@ STATIC = Path(__file__).parent / "static"
 class State:
     def __init__(self):
         self.config = config_mod.load_config()
-        self.storage = Storage(self.config.data_dir)
+        self._storages: dict[tuple, Storage] = {}
 
     def reload(self, cfg=None):
         self.config = cfg or config_mod.load_config()
-        self.storage = Storage(self.config.data_dir)
+        self._storages = {}
+
+    @property
+    def storage(self) -> Storage:
+        """The logged-in user's own books (data/users/<id>/books)."""
+        user = auth.require_user()
+        key = (str(self.config.data_dir), user.id)
+        if key not in self._storages:
+            self._storages[key] = Storage(auth.store().user_dir(user))
+        return self._storages[key]
 
 
 state = State()
 engine = Engine(lambda: state.config, lambda: state.storage)
+auth.configure(lambda: state.config.data_dir)
 app = FastAPI(title="Story Writing AI Helper")
 app.include_router(make_router(lambda: state.storage))
+app.add_middleware(auth.AuthMiddleware)
+app.include_router(auth.router)
+app.router.on_startup.append(auth.store)  # creates the first admin and logs setup hints at start
+
+
+def _own_job(job_id: str):
+    job = engine.jobs.get(job_id)
+    if job is None or job.owner != auth.require_user().id:
+        raise HTTPException(404, "job not found")
+    return job
 
 
 @app.exception_handler(NotFound)
@@ -228,19 +249,18 @@ async def run(book: str, body: RunBody):
 
 @app.get("/api/jobs")
 async def jobs():
-    return [j.public() for j in sorted(engine.jobs.values(), key=lambda j: -j.started)]
+    me = auth.require_user().id
+    return [j.public() for j in sorted(engine.jobs.values(), key=lambda j: -j.started) if j.owner == me]
 
 
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str):
-    if job_id not in engine.jobs:
-        raise HTTPException(404, "job not found")
-    return engine.jobs[job_id].public()
+    return _own_job(job_id).public()
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel(job_id: str):
-    engine.cancel(job_id)
+    engine.cancel(_own_job(job_id).id)
     return {"ok": True}
 
 

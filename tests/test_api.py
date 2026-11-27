@@ -4,11 +4,10 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main
+from app import auth, main
 from app.config import load_config
 from app.prompts import REPORT_RULES, extract_target
 from app.providers import PROVIDER_TYPES, Provider
-from app.storage import Storage
 
 
 class FakeProvider(Provider):
@@ -32,10 +31,19 @@ def client(tmp_path, monkeypatch):
     for a in cfg.agents.values():
         a.provider = None
     cfg.data_dir = tmp_path
-    main.state.config = cfg
-    main.state.storage = Storage(tmp_path)
+    main.state.reload(cfg)
+    auth.configure(lambda: main.state.config.data_dir)
+    auth.store().create("tester", "correct horse battery", is_admin=True)
     with TestClient(main.app) as c:
+        login(c, "tester", "correct horse battery")
         yield c
+
+
+def login(c, username, password):
+    r = c.post("/api/auth/login", json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    c.headers["X-CSRF-Token"] = c.cookies.get(auth.CSRF_COOKIE)
+    return r
 
 
 def wait(c, job_id):

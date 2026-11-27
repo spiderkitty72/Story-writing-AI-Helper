@@ -5,3 +5,5 @@ __pycache__/
 .env
 data/books/*
 !data/books/.gitkeep
+data/users/
+data/auth.db*

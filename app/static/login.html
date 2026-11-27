@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · Story Helper</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/account.css">
+</head>
+<body class="auth-page">
+<form id="loginForm" class="panel auth-card" autocomplete="on">
+  <h2>✒️ Story Helper</h2>
+  <label>Username <input id="username" name="username" autocomplete="username" autocapitalize="none" required autofocus></label>
+  <label>Password <input id="password" name="password" type="password" autocomplete="current-password" required></label>
+  <p id="loginError" class="auth-error" role="alert"></p>
+  <button type="submit" class="primary wide">Log in</button>
+  <p class="muted small-text">No account? Ask the person who runs this site to create one for you.</p>
+</form>
+<script src="/static/login.js"></script>
+</body>
+</html>

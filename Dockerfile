@@ -14,4 +14,5 @@ COPY config ./config
 
 VOLUME ["/data"]
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers: trust X-Forwarded-For/-Proto only from FORWARDED_ALLOW_IPS (see README).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
