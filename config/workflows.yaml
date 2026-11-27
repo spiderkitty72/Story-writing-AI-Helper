@@ -1,0 +1,27 @@
+# Workflows chain agents together. Each chunk of text goes through the steps in
+# order; an "edit" step's output becomes the next step's input. All edits are
+# collected into one review where you accept or reject every change.
+#
+# A step can override the agent's provider/model/temperature, or add extra
+# instructions that are appended to the ones you type in the app.
+
+workflows:
+  proofread:
+    description: Spelling, then grammar.
+    steps:
+      - agent: spelling
+      - agent: grammar
+
+  full_edit:
+    description: Spelling, grammar, then a logic and continuity check.
+    steps:
+      - agent: spelling
+      - agent: grammar
+      - agent: logic
+
+  expand_scene:
+    description: Expand the text with more detail, then proofread the result.
+    steps:
+      - agent: expand
+      - agent: grammar
+        instructions: Only fix errors; do not shorten the text.

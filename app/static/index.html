@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Story Writing AI Helper</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">✒️ Story Helper</div>
+  <select id="bookSelect" title="Book"></select>
+  <button id="newBookBtn" class="ghost">+ Book</button>
+  <a id="exportBtn" class="button ghost" href="#" title="Download the whole book as one Markdown file">Export .md</a>
+  <nav class="tabs">
+    <button data-tab="write" class="active">Write</button>
+    <button data-tab="review">Review <span id="reviewBadge" class="badge hidden"></span></button>
+    <button data-tab="knowledge">Knowledge</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="side-head"><h3>Chapters</h3><button id="newChapterBtn" class="ghost small">+ New</button></div>
+    <ul id="chapterList" class="list"></ul>
+    <div class="side-head"><h3>AI jobs</h3></div>
+    <ul id="jobList" class="list jobs"></ul>
+  </aside>
+
+  <main>
+    <!-- WRITE -->
+    <section id="tab-write" class="tab active">
+      <div class="write-grid">
+        <div class="editor-col">
+          <div class="toolbar">
+            <strong id="chapterTitle">No chapter</strong>
+            <span id="saveState" class="muted"></span>
+            <span class="spacer"></span>
+            <span id="wordCount" class="muted"></span>
+            <label class="toggle"><input type="checkbox" id="previewToggle"> Preview</label>
+            <button id="renameChapterBtn" class="ghost small">Rename</button>
+            <button id="deleteChapterBtn" class="ghost small danger">Delete</button>
+            <button id="saveBtn" class="small">Save</button>
+          </div>
+          <div class="editor-wrap">
+            <textarea id="editor" spellcheck="true" placeholder="Start writing in Markdown…"></textarea>
+            <div id="preview" class="preview prose hidden"></div>
+          </div>
+        </div>
+
+        <div class="ai-col panel">
+          <h3>Ask the AI</h3>
+          <label>Task
+            <select id="taskSelect"></select>
+          </label>
+          <p id="taskDesc" class="muted small-text"></p>
+          <label>Your instructions
+            <textarea id="instructions" rows="5" placeholder="e.g. Add more detail to the market scene, but keep Mara's limp and the rainy autumn mood."></textarea>
+          </label>
+          <label>Apply to
+            <select id="scopeSelect">
+              <option value="chapter">Whole chapter</option>
+              <option value="selection">Selected text only</option>
+            </select>
+          </label>
+          <details>
+            <summary>Advanced</summary>
+            <label>Provider
+              <select id="providerSelect"><option value="">(agent default)</option></select>
+            </label>
+            <label>Model override <input id="modelInput" placeholder="(provider default)"></label>
+            <div class="row">
+              <label>Chunk size (tokens) <input id="chunkInput" type="number" min="100" step="100"></label>
+              <label>Overlap (tokens) <input id="overlapInput" type="number" min="0" step="50"></label>
+            </div>
+            <label class="toggle"><input type="checkbox" id="useKnowledge" checked> Send relevant knowledge graph facts</label>
+          </details>
+          <button id="runBtn" class="primary wide">Run</button>
+          <div id="runStatus" class="muted small-text"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REVIEW -->
+    <section id="tab-review" class="tab">
+      <div class="review-grid">
+        <div class="panel review-list-panel">
+          <h3>Change sets</h3>
+          <ul id="reviewList" class="list"></ul>
+        </div>
+        <div class="review-main">
+          <div id="reviewEmpty" class="empty">Run an AI task, then review its changes here.</div>
+          <div id="reviewView" class="hidden">
+            <div class="toolbar sticky">
+              <div>
+                <strong id="reviewTitle"></strong>
+                <div id="reviewMeta" class="muted small-text"></div>
+              </div>
+              <span class="spacer"></span>
+              <button id="prevChangeBtn" class="ghost small" title="Previous change">↑</button>
+              <button id="nextChangeBtn" class="ghost small" title="Next change">↓</button>
+              <button id="acceptAllBtn" class="ghost small">Accept all</button>
+              <button id="rejectAllBtn" class="ghost small">Reject all</button>
+              <button id="discardBtn" class="ghost small danger">Discard</button>
+              <button id="applyBtn" class="primary small">Apply to chapter</button>
+            </div>
+            <p class="muted small-text legend">Click a highlighted change to accept or reject it.
+              <span class="chg-sample accepted"><del>old</del><ins>new</ins></span> accepted ·
+              <span class="chg-sample rejected"><del>old</del><ins>new</ins></span> rejected</p>
+            <div id="reviewBody" class="review-body prose-plain"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- KNOWLEDGE -->
+    <section id="tab-knowledge" class="tab">
+      <div class="knowledge-grid">
+        <div class="panel">
+          <h3>Book notes</h3>
+          <p class="muted small-text">Style, theme, tone and rules. Sent with every AI request.</p>
+          <textarea id="bookNotes" rows="5" placeholder="e.g. Dark fantasy, third person past tense, British spelling. Magic always costs the user a memory."></textarea>
+          <button id="saveNotesBtn" class="small">Save notes</button>
+
+          <h3 class="mt">Knowledge graph</h3>
+          <div class="row">
+            <select id="kgScope"><option value="">Whole book</option></select>
+            <select id="kgProvider"><option value="">(default provider)</option></select>
+          </div>
+          <button id="buildKgBtn" class="primary wide">Extract from text with AI</button>
+          <input id="kgFilter" placeholder="Filter entities…">
+          <ul id="entityList" class="list entities"></ul>
+          <button id="addEntityBtn" class="ghost small">+ Add entity</button>
+        </div>
+        <div class="graph-col">
+          <canvas id="graphCanvas"></canvas>
+          <div id="entityEditor" class="panel entity-editor hidden">
+            <div class="row"><label>Name <input id="entName"></label>
+              <label>Type <select id="entType"></select></label></div>
+            <label>Also called (comma separated) <input id="entAliases"></label>
+            <label>Description <textarea id="entDesc" rows="2"></textarea></label>
+            <label>Facts (one per line) <textarea id="entFacts" rows="4"></textarea></label>
+            <label class="toggle"><input type="checkbox" id="entPinned"> Pinned (always send to the AI)</label>
+            <div class="rel-box">
+              <strong>Relations</strong>
+              <ul id="relList" class="list small-text"></ul>
+              <div class="row"><input id="relLabel" placeholder="e.g. sister of">
+                <select id="relTarget"></select><button id="addRelBtn" class="ghost small">Add</button></div>
+            </div>
+            <div class="row end">
+              <button id="deleteEntityBtn" class="ghost small danger">Delete</button>
+              <button id="closeEntityBtn" class="ghost small">Close</button>
+              <button id="saveEntityBtn" class="primary small">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab">
+      <div class="panel">
+        <h3>Providers</h3>
+        <table class="table"><thead><tr><th>Name</th><th>Type</th><th>Model</th><th>Status</th></tr></thead>
+          <tbody id="providerTable"></tbody></table>
+      </div>
+      <div class="panel">
+        <h3>Configuration files</h3>
+        <p class="muted small-text">Define providers, agents and workflows. Changes are validated before they are saved.</p>
+        <div class="row">
+          <select id="cfgFile">
+            <option>agents.yaml</option><option>workflows.yaml</option><option>settings.yaml</option>
+          </select>
+          <span id="cfgStatus" class="muted"></span>
+          <span class="spacer"></span>
+          <button id="saveCfgBtn" class="primary small">Save &amp; reload</button>
+        </div>
+        <textarea id="cfgEditor" class="code" rows="28" spellcheck="false"></textarea>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
