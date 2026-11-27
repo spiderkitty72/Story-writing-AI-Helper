@@ -64,7 +64,7 @@ async function loadConfig() {
   const provOpts = S.config.providers.map((p) => `<option value="${esc(p.name)}">${esc(p.name)} (${esc(p.type)}${p.model ? ", " + esc(p.model) : ""})</option>`).join("");
   $("providerSelect").innerHTML = `<option value="">(agent default: ${esc(S.config.default_provider)})</option>` + provOpts;
   $("kgProvider").innerHTML = `<option value="">(default: ${esc(S.config.default_provider)})</option>` + provOpts;
-  $("chunkInput").placeholder = S.config.chunking.chunk_tokens;
+  $("chunkInput").placeholder = "agent default";
   $("overlapInput").placeholder = S.config.chunking.overlap_tokens;
 }
 function updateTaskDesc() {

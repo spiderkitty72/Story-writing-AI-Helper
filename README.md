@@ -118,19 +118,21 @@ providers:
   claude: { type: anthropic, api_key: "${ANTHROPIC_API_KEY:-}", model: claude-sonnet-5-5 }
   gemini: { type: gemini, api_key: "${GEMINI_API_KEY:-}", model: gemini-2.5-flash }
 chunking:
-  chunk_tokens: 1200     # text edited per request
-  overlap_tokens: 300    # read-only context before each chunk (half as much after)
+  chunk_tokens: 600      # text edited per request (agents can set their own)
+  overlap_tokens: 150    # read-only context before each chunk (half as much after)
   knowledge_tokens: 600  # budget for the knowledge-graph summary
 ```
 
 You can define several providers of the same type, for example a fast
 `ollama-small` and a slower `ollama-big` with different models.
 
-**Picking sizes:** with a local model, keep `chunk_tokens + overlap_tokens * 1.5
-+ knowledge_tokens`, plus about the same as `chunk_tokens` again for the answer,
-below the model's `num_ctx`. For *expand* tasks the answer is longer, so use
-smaller chunks. Claude and Gemini have large context windows, so you can raise
-`chunk_tokens` to 3000 or more.
+**Picking sizes:** small local models (7-8B, like `llama3.1:8b`) lose track of
+long passages: they skip paragraphs, blend sentences together, or stop fixing
+errors halfway through. The built-in agents therefore send only 350-400 tokens
+(a few paragraphs) at a time. With Claude, Gemini or a large local model you can
+raise `chunk_tokens` on the agents to 1500 or more for faster runs. The app
+raises Ollama's `num_ctx` automatically when a prompt would not fit (up to
+`max_ctx`), because Ollama otherwise silently cuts off the start of the prompt.
 
 ### `agents.yaml`
 
@@ -149,6 +151,19 @@ agents:
 ```
 
 `{instructions}` is replaced with whatever you type in the app.
+
+Optional safety settings for edit agents:
+
+```yaml
+    chunk_tokens: 350            # text per request for this agent
+    length_ratio: [0.85, 1.15]   # answer must be 85%-115% as long as the input
+    keep_paragraphs: true        # answer must keep the same number of paragraphs
+```
+
+If an answer breaks these rules (or the model ran out of output space), the
+app asks once more with a stricter reminder. If the second answer is still
+wrong, it keeps your original text for that part and shows a red warning in
+the review, so a confused model can never silently delete your story.
 
 ### `workflows.yaml`
 
@@ -170,6 +185,20 @@ the input of the next. All edits end up in one review.
 
 Subclass `Provider` in `app/providers/__init__.py`, implement `complete()`,
 and add it to `PROVIDER_TYPES`. Then reference its `type` in `settings.yaml`.
+
+## Troubleshooting
+
+- **The AI drops or mixes up paragraphs.** Lower `chunk_tokens` for that agent
+  (try 250), or use a bigger model. Warnings in the review show which parts were
+  kept unchanged.
+- **Spelling/grammar passes change very little.** Small models are cautious.
+  Smaller chunks help, and so does a model tuned for instructions such as
+  `qwen2.5:7b-instruct` or `mistral-nemo`. You can also add your own examples
+  of the kind of mistakes you make to the agent's `task` in `agents.yaml`.
+- **Updating the app.** If you edited files in `config/`, `git pull` may stop
+  with a conflict on them. Copy your versions somewhere, run
+  `git checkout -- config && git pull`, then re-apply your changes. Rebuild with
+  `docker compose up -d --build`.
 
 ## Where things are stored
 

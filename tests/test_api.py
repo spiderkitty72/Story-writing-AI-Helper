@@ -109,3 +109,86 @@ def test_path_traversal_rejected(client):
     assert client.get("/api/books/..%2F..%2Fetc").status_code in (400, 404)
     book = client.post("/api/books", json={"title": "P"}).json()["id"]
     assert client.get(f"/api/books/{book}/chapters/..%2Fbook.yaml").status_code in (400, 404)
+
+
+class LazyProvider(Provider):
+    """Behaves like a small model that drops most of the passage."""
+
+    type_name = "lazy"
+    calls: list[str] = []
+
+    async def complete(self, system, prompt, *, model=None, temperature=None):
+        LazyProvider.calls.append(prompt)
+        target = extract_target(prompt)
+        if "IMPORTANT" in prompt and "fixed-on-retry" in system:
+            return target.replace("markt", "market")
+        return target.split("\n\n")[0]  # only the first paragraph
+
+
+def _use_provider(client, type_name, system_marker=""):
+    PROVIDER_TYPES[type_name] = LazyProvider
+    main.state.config.providers = {type_name: {"type": type_name}}
+    main.state.config.default_provider = type_name
+    for a in main.state.config.agents.values():
+        a.system += system_marker
+
+
+def _chapter(client, text):
+    book = client.post("/api/books", json={"title": "Guard"}).json()["id"]
+    ch = client.get(f"/api/books/{book}").json()["chapters"][0]["id"]
+    client.put(f"/api/books/{book}/chapters/{ch}", json={"text": text})
+    return book, ch
+
+
+STORY = "\n\n".join(f"Paragraph {i}: Mara walked to the markt and bought some bread there." for i in range(4)) + "\n"
+
+
+def test_short_answer_is_retried_then_original_kept(client):
+    _use_provider(client, "lazy")
+    LazyProvider.calls = []
+    book, ch = _chapter(client, STORY)
+    job = wait(client, client.post(f"/api/books/{book}/run", json={"chapter": ch, "agent": "grammar"}).json()["id"])
+    assert job["status"] == "done", job
+    review = client.get(f"/api/books/{book}/reviews/{job['result']['review_id']}").json()
+    assert review["changes"] == 0  # nothing of the story is deleted
+    assert any("kept the original" in e for c in review["chunks"] for e in c["errors"])
+    assert len(LazyProvider.calls) == 2 and "IMPORTANT" in LazyProvider.calls[1]
+
+
+def test_retry_can_succeed(client):
+    _use_provider(client, "lazy", system_marker=" fixed-on-retry")
+    book, ch = _chapter(client, STORY)
+    job = wait(client, client.post(f"/api/books/{book}/run", json={"chapter": ch, "agent": "grammar"}).json()["id"])
+    review = client.get(f"/api/books/{book}/reviews/{job['result']['review_id']}").json()
+    assert review["changes"] == 4
+    assert not any(c["errors"] for c in review["chunks"])
+
+
+def test_agent_chunk_size_is_used(client):
+    PROVIDER_TYPES["fake"] = FakeProvider
+    book, ch = _chapter(client, STORY * 20)
+    job = wait(client, client.post(f"/api/books/{book}/run", json={"chapter": ch, "agent": "spelling"}).json()["id"])
+    review = client.get(f"/api/books/{book}/reviews/{job['result']['review_id']}").json()
+    chunk_tokens = main.state.config.agents["spelling"].chunk_tokens
+    assert len(review["chunks"]) >= len(STORY * 20) // (chunk_tokens * 4)
+
+
+def test_ollama_context_grows_to_fit_prompt():
+    import asyncio
+    import json as _json
+
+    import httpx
+
+    from app.providers import OllamaProvider
+
+    seen = {}
+
+    def handler(request):
+        seen.update(_json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": "ok"}, "done_reason": "length"})
+
+    p = OllamaProvider("o", {"model": "m", "num_ctx": 2048, "num_predict": 1000})
+    p._client = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    asyncio.run(p.complete("sys", "x" * 30000))
+    assert seen["options"]["num_ctx"] >= 10000 + 1000
+    assert p.truncated is True

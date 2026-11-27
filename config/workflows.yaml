@@ -19,6 +19,13 @@ workflows:
       - agent: grammar
       - agent: logic
 
+  rewrite_and_proofread:
+    description: Rewrite for flow, then proofread the result.
+    steps:
+      - agent: rewrite
+      - agent: grammar
+        instructions: Only fix errors; do not shorten the text.
+
   expand_scene:
     description: Expand the text with more detail, then proofread the result.
     steps:

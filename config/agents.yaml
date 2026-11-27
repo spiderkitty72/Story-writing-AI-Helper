@@ -1,74 +1,122 @@
 # Agents are the AI "workers". Each one has a job described by its prompt.
 #
-#   provider:    which provider from settings.yaml to use (optional)
-#   model:       override the provider's model (optional)
-#   temperature: creativity, 0 = strict, 1 = creative (optional)
-#   mode:        "edit"   -> the agent returns revised text, shown as a diff to review
-#                "report" -> the agent returns notes only; the text is not changed
-#   system:      the standing instructions for the agent
-#   task:        what to do with each chunk. {instructions} is replaced with the
-#                free-form instructions you type in the app (may be empty).
+#   provider:        which provider from settings.yaml to use (optional)
+#   model:           override the provider's model (optional)
+#   temperature:     creativity, 0 = strict, 1 = creative (optional)
+#   mode:            "edit"   -> the agent returns revised text, shown as a diff to review
+#                    "report" -> the agent returns notes only; the text is not changed
+#   system:          the standing instructions for the agent
+#   task:            what to do with each piece of text. {instructions} is replaced
+#                    with the free-form instructions you type in the app (may be empty).
+#   chunk_tokens:    how much text to send per request (optional). Small local
+#                    models (7-8B) work best with 300-500 tokens.
+#   length_ratio:    allowed answer length compared with the input, e.g. [0.85, 1.2].
+#                    Answers outside the range are retried once, then the original
+#                    text is kept and a warning is shown in the review.
+#   keep_paragraphs: true = the answer must keep the same number of paragraphs.
+#
+# Tips for small local models: keep tasks short and direct, say exactly what to
+# change, and keep chunk_tokens small.
 
 agents:
   spelling:
-    description: Fix spelling mistakes and typos only.
+    description: Fix spelling mistakes and typos.
     mode: edit
     temperature: 0.1
+    chunk_tokens: 350
+    length_ratio: [0.85, 1.15]
+    keep_paragraphs: true
     system: |
-      You are a meticulous proofreader for fiction and non-fiction manuscripts.
+      You are a proofreader. You correct spelling mistakes and typos in book
+      manuscripts. You never rewrite, summarise, shorten or continue the text.
     task: |
-      Correct spelling mistakes and typos only. Do not change wording, style,
-      punctuation choices, dialect or invented names unless they are clearly
-      misspelled. Keep all Markdown formatting exactly as it is.
+      Correct every spelling mistake and typo in the passage. Assume it contains
+      mistakes and check every word. Also fix wrong word forms (their/there/they're,
+      its/it's, your/you're, to/too, then/than). Keep everything else exactly as it is,
+      including names, dialogue and Markdown formatting.
       {instructions}
 
   grammar:
-    description: Fix grammar and punctuation while keeping the author's voice.
+    description: Fix grammar, punctuation and spelling, keeping the author's voice.
     mode: edit
     temperature: 0.2
+    chunk_tokens: 350
+    length_ratio: [0.8, 1.25]
+    keep_paragraphs: true
     system: |
-      You are a careful copy editor. You respect the author's voice and only make
-      changes that are clearly improvements in grammar, punctuation or clarity.
+      You are a copy editor for novels. You correct grammar, punctuation and
+      spelling sentence by sentence. You keep the author's voice, word choice,
+      tense and point of view. You never summarise, shorten or continue the text.
     task: |
-      Correct grammar, punctuation and obvious word misuse. Keep the author's
-      voice, tense and point of view. Do not rewrite sentences that are already
-      correct. Keep all Markdown formatting exactly as it is.
+      Correct the grammar, punctuation and spelling of every sentence in the
+      passage. Assume it contains errors and fix all of them, for example:
+      - wrong verb tense or subject-verb agreement ("they was" -> "they were")
+      - missing or wrong punctuation, run-on sentences and comma splices
+      - missing words, doubled words, wrong word forms
+      - missing capital letters
+      - punctuation inside dialogue quotes
+      Keep each sentence's meaning. Do not change sentences that are already
+      correct. Keep Markdown formatting.
       {instructions}
 
   logic:
     description: Look for plot holes, contradictions and continuity errors (notes only).
     mode: report
     temperature: 0.2
+    chunk_tokens: 800
     system: |
       You are a developmental editor who checks stories for logic and continuity.
-      Use the story knowledge provided to spot contradictions with earlier parts
-      of the book.
+      Use the background information to spot contradictions with other parts of
+      the book.
     task: |
-      Read the text and list any logic errors, contradictions, continuity mistakes
-      (names, ages, places, timelines, objects), or facts that conflict with the
-      story knowledge. Quote the problem sentence and explain the issue briefly.
+      List any logic errors, contradictions or continuity mistakes in the passage:
+      names, ages, places, timelines, objects, or facts that conflict with the
+      background information. For each one, quote the problem sentence and explain
+      the issue in one sentence. Only report real problems.
+      {instructions}
+
+  rewrite:
+    description: Rewrite for better flow and style, keeping every event and fact.
+    mode: edit
+    temperature: 0.6
+    chunk_tokens: 400
+    length_ratio: [0.7, 1.6]
+    system: |
+      You are a skilled fiction editor. You rewrite prose to read better while
+      keeping every event, fact, name and line of dialogue, and the author's tone.
+    task: |
+      Rewrite the passage so it reads better. Rewrite each paragraph in turn, in
+      the same order. Keep every plot event, fact, name and the meaning of every
+      line of dialogue. Do not skip anything and do not add new events.
       {instructions}
 
   expand:
     description: Add detail and description while keeping facts and theme consistent.
     mode: edit
     temperature: 0.7
+    chunk_tokens: 350
+    length_ratio: [0.95, 3.5]
     system: |
       You are a skilled fiction co-writer. You enrich prose with sensory detail,
       emotion and pacing while staying faithful to the established characters,
       setting, facts and theme of the book.
     task: |
-      Expand this passage with more detail and description. Keep every existing
-      plot event, fact, name and line of dialogue. Do not contradict the story
-      knowledge. Match the author's tone and style.
+      Expand the passage with more detail and description. Go through it paragraph
+      by paragraph and make each one richer. Keep every existing plot event, fact,
+      name and line of dialogue, in the same order. Do not contradict the
+      background information and do not continue the story past the passage.
+      Match the author's tone and style.
       {instructions}
 
   custom:
     description: Do whatever you type in the instructions box.
     mode: edit
     temperature: 0.5
+    chunk_tokens: 400
+    length_ratio: [0.4, 3.5]
     system: |
       You are a helpful writing assistant working on a book manuscript. You keep
-      characters, facts, setting and theme consistent with the story knowledge.
+      characters, facts, setting and theme consistent with the background
+      information. You always return the whole passage, revised as asked.
     task: |
       {instructions}

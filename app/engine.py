@@ -11,11 +11,38 @@ from app import knowledge as kg
 from app.chunking import chunk_text
 from app.config import Config, WorkflowStep
 from app.diffing import apply_decisions, count_changes, diff_segments
-from app.prompts import build_prompt, clean_edit_output, parse_notes
+from app.prompts import (
+    RETRY_LONG,
+    RETRY_PARAGRAPHS,
+    RETRY_SHORT,
+    build_prompt,
+    build_system,
+    clean_edit_output,
+    count_paragraphs,
+    parse_notes,
+)
 from app.providers import Provider, ProviderError, make_provider
 from app.storage import Conflict, Storage
 
 MAX_CONSECUTIVE_ERRORS = 3
+DEFAULT_LENGTH_RATIO = (0.5, 2.5)
+
+
+def check_answer(original: str, revised: str, agent, truncated: bool) -> str | None:
+    """Return why an edit answer looks broken, or None if it looks usable."""
+    if truncated:
+        return "the answer was cut off by the model's output limit"
+    lo, hi = agent.length_ratio or DEFAULT_LENGTH_RATIO
+    n = max(1, len(original.strip()))
+    ratio = len(revised.strip()) / n
+    if n >= 80 and ratio < lo:
+        return f"the answer was only {ratio:.0%} as long as the original, so text was left out"
+    if n >= 80 and ratio > hi:
+        return f"the answer was {ratio:.0%} as long as the original, more than expected"
+    if agent.keep_paragraphs and count_paragraphs(original) != count_paragraphs(revised):
+        return (f"the answer had {count_paragraphs(revised)} paragraphs instead of "
+                f"{count_paragraphs(original)}")
+    return None
 
 
 @dataclass
@@ -120,7 +147,8 @@ class Engine:
         if not region.strip():
             raise ValueError("There is no text to work on")
         cs = cfg.chunking
-        chunk_tokens = req.chunk_tokens or cs.chunk_tokens
+        agent_sizes = [cfg.agents[st.agent].chunk_tokens for st in steps if cfg.agents[st.agent].chunk_tokens]
+        chunk_tokens = req.chunk_tokens or (min(agent_sizes) if agent_sizes else cs.chunk_tokens)
         overlap = cs.overlap_tokens if req.overlap_tokens is None else req.overlap_tokens
         chunks = chunk_text(region, chunk_tokens, overlap, cs.chars_per_token,
                             prefix=text[:start], suffix=text[end:])
@@ -140,30 +168,46 @@ class Engine:
             before = revised_so_far[-len(ch.before):] if ch.before else ""
             for step in steps:
                 agent = cfg.agents[step.agent]
-                job.message = f"Chunk {ch.index + 1}/{len(chunks)}: {agent.name}"
+                job.message = f"Part {ch.index + 1}/{len(chunks)}: {agent.name}"
                 provider = self.provider(req.provider or step.provider or agent.provider)
                 instructions = "\n".join(x for x in (req.instructions.strip(), step.instructions.strip()) if x)
                 knowledge = kg.render_context(graph, before + current + ch.after,
                                               cs.knowledge_tokens * cs.chars_per_token) if req.use_knowledge else ""
-                prompt = build_prompt(agent.task, instructions, current, mode=agent.mode,
-                                      before=before, after=ch.after, knowledge=knowledge, book_notes=book_notes)
+                system = build_system(agent.system, before=before, after=ch.after,
+                                      knowledge=knowledge, book_notes=book_notes)
                 temperature = step.temperature if step.temperature is not None else agent.temperature
-                try:
-                    answer = await provider.complete(agent.system, prompt,
-                                                     model=req.model or step.model or agent.model,
-                                                     temperature=temperature)
-                    consecutive_errors = 0
-                except ProviderError as e:
-                    errors.append(f"{agent.name}: {e}")
-                    consecutive_errors += 1
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS or (ch.index == 0 and len(chunks) == 1):
-                        raise
-                    job.progress += 1
-                    continue
-                if agent.mode == "edit":
-                    current = clean_edit_output(answer, current)
-                else:
-                    notes += [{"agent": agent.name, "text": n} for n in parse_notes(answer)]
+                model = req.model or step.model or agent.model
+                extra = ""
+                for attempt in range(2):
+                    prompt = build_prompt(agent.task, instructions, current, mode=agent.mode, extra=extra)
+                    try:
+                        answer = await provider.complete(system, prompt, model=model, temperature=temperature)
+                        consecutive_errors = 0
+                    except ProviderError as e:
+                        errors.append(f"{agent.name}: {e}")
+                        consecutive_errors += 1
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS or len(chunks) == 1:
+                            raise
+                        break
+                    if agent.mode != "edit":
+                        notes += [{"agent": agent.name, "text": n} for n in parse_notes(answer)]
+                        break
+                    revised = clean_edit_output(answer, current, before, ch.after)
+                    problem = check_answer(current, revised, agent, provider.truncated)
+                    if problem is None:
+                        current = revised
+                        break
+                    if attempt == 0:
+                        job.message = f"Part {ch.index + 1}/{len(chunks)}: {agent.name} (retrying)"
+                        if "paragraphs" in problem:
+                            extra = RETRY_PARAGRAPHS
+                        elif "more than expected" in problem:
+                            extra = RETRY_LONG
+                        else:
+                            extra = RETRY_SHORT
+                    else:
+                        errors.append(f"{agent.name}: kept the original text for this part because {problem}. "
+                                      f"Try a smaller chunk size or a larger model.")
                 job.progress += 1
             revised_so_far += current
             segments = diff_segments(ch.text, current)

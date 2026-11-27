@@ -4,7 +4,7 @@ from app import knowledge as kg
 from app.chunking import chunk_text
 from app.config import load_config
 from app.diffing import apply_decisions, diff_segments
-from app.prompts import build_prompt, clean_edit_output, extract_target, parse_notes
+from app.prompts import build_prompt, build_system, clean_edit_output, extract_target, parse_notes
 
 TEXT = """# Chapter One
 
@@ -51,13 +51,29 @@ def test_diff_roundtrip_and_partial_accept():
 
 
 def test_prompt_and_cleanup():
-    p = build_prompt("Fix spelling. {instructions}", "Use UK spelling", "colour", before="x", knowledge="- Mara")
-    assert "Use UK spelling" in p and "Story knowledge" in p
+    system = build_system("You edit.", before="Earlier.", after="Later.", knowledge="- Mara")
+    assert "BACKGROUND" in system and "Earlier." in system and "Mara" in system
+    p = build_prompt("Fix spelling. {instructions}", "Use UK spelling", "colour")
+    assert "Use UK spelling" in p and "Earlier." not in p
     assert extract_target(p) == "colour"
+    assert p.rstrip().endswith("Now write the revised passage.")
     assert clean_edit_output("Here is the corrected text:\n\n```\nHello world.\n```", "\nHelo world.\n\n") == "\nHello world.\n\n"
     assert clean_edit_output("", "keep") == "keep"
     assert parse_notes("- one\n- two\n  continued") == ["one", "two continued"]
     assert parse_notes("No issues found.") == []
+
+
+def test_cleanup_keeps_story_lines_that_look_like_wrappers():
+    original = "Here is the castle, she said.\n\nI have never seen it.\n\nNote: the gate was shut."
+    assert clean_edit_output(original, original) == original
+
+
+def test_cleanup_strips_notes_and_echoed_context():
+    before = "The wind howled across the moor as the travellers huddled together."
+    after = "Morning came grey and cold, and nobody spoke of the night again."
+    answer = (before + "\n\nMara lit the fire.\n\n" + after +
+              "\n\nChanges made:\n- fixed a typo")
+    assert clean_edit_output(answer, "Mara lit teh fire.", before, after) == "Mara lit the fire."
 
 
 def test_knowledge_merge_and_context():
@@ -80,3 +96,26 @@ def test_default_config_loads():
     assert {"ollama", "claude", "gemini", "echo"} <= set(cfg.providers)
     assert {"spelling", "grammar", "logic", "expand", "custom"} <= set(cfg.agents)
     assert cfg.workflows["proofread"].steps[0].agent == "spelling"
+
+
+def test_rewrite_diff_is_readable():
+    a = ("The old man walked slowly down the road toward the village, carrying a basket of apples.\n\n"
+         "Mara waited by the gate.\n")
+    b = ("Carrying his apples in a wicker basket, the elderly farmer shuffled along the lane to town.\n\n"
+         "Mara waited by the gate.\n")
+    segs = diff_segments(a, b)
+    changes = [s for s in segs if s["type"] == "change"]
+    # one whole-paragraph change, not a soup of small edits matched on "the"
+    assert len(changes) == 1
+    assert changes[0]["old"].startswith("The old man") and changes[0]["new"].startswith("Carrying")
+    assert apply_decisions(segs, default=True) == b and apply_decisions(segs) == a
+
+
+def test_diff_handles_added_and_removed_paragraphs():
+    a = "One.\n\nTwo.\n\nThree.\n"
+    b = "One.\n\nTwo and a half.\n\nA new one.\n\nThree.\n"
+    segs = diff_segments(a, b)
+    assert apply_decisions(segs, default=True) == b and apply_decisions(segs) == a
+    c = "One.\n\nThree.\n"
+    segs = diff_segments(a, c)
+    assert apply_decisions(segs, default=True) == c and apply_decisions(segs) == a
