@@ -12,9 +12,13 @@ providers:
     type: ollama
     base_url: ${OLLAMA_URL:-http://localhost:11434}
     model: ${OLLAMA_MODEL:-llama3.1:8b}
-    # Context window to request from Ollama (tokens). Keep it larger than
-    # chunk_tokens + overlap + knowledge_tokens + room for the answer.
+    # Context window to request from Ollama (tokens). The app raises it
+    # automatically (up to max_ctx) when a prompt would not fit, because
+    # Ollama silently cuts off the start of prompts that are too long.
     num_ctx: 8192
+    max_ctx: 32768
+    # Longest answer the model may write (tokens).
+    num_predict: 4096
     timeout: 600
 
   claude:
@@ -38,11 +42,13 @@ providers:
 
 # Rolling context window. Sizes are approximate tokens (about 4 characters each).
 chunking:
-  # How much text is sent to the AI to edit in one request.
-  chunk_tokens: 1200
+  # How much text is sent to the AI to edit in one request, for agents that
+  # don't set their own chunk_tokens. Small local models work best with
+  # 300-600; Claude and Gemini handle 2000+ well.
+  chunk_tokens: 600
   # How much text before (and half as much after) each chunk is sent as
   # read-only context so the AI knows what surrounds it.
-  overlap_tokens: 300
+  overlap_tokens: 150
   # Maximum size of the knowledge-graph summary included with each request.
   knowledge_tokens: 600
   # Characters per token used for the estimate.

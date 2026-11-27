@@ -22,6 +22,9 @@ class Provider:
         self.options = options
         self.model = options.get("model", "")
         self.timeout = float(options.get("timeout", 300))
+        # Set by complete(): True when the model stopped because it hit its
+        # output limit, meaning the answer is cut off.
+        self.truncated = False
 
     async def complete(self, system: str, prompt: str, *, model: str | None = None,
                        temperature: float | None = None) -> str:
@@ -62,6 +65,14 @@ class OllamaProvider(Provider):
         return self.options.get("base_url", "http://localhost:11434").rstrip("/")
 
     async def complete(self, system, prompt, *, model=None, temperature=None):
+        # Ollama silently drops the START of a prompt that does not fit in
+        # num_ctx, which loses the instructions. Make sure it always fits,
+        # with room for an answer up to twice as long as the prompt's passage.
+        prompt_tokens = (len(system) + len(prompt)) // 3 + 64
+        num_predict = int(self.options.get("num_predict", 4096))
+        num_ctx = max(int(self.options.get("num_ctx", 8192)), prompt_tokens + num_predict)
+        max_ctx = int(self.options.get("max_ctx", 32768))
+        num_ctx = min(num_ctx, max_ctx)
         body: dict[str, Any] = {
             "model": model or self.model,
             "stream": False,
@@ -69,7 +80,7 @@ class OllamaProvider(Provider):
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "options": {"num_ctx": int(self.options.get("num_ctx", 8192))},
+            "options": {"num_ctx": num_ctx, "num_predict": num_predict},
         }
         if temperature is not None:
             body["options"]["temperature"] = temperature
@@ -80,7 +91,9 @@ class OllamaProvider(Provider):
                 raise ProviderError(f"Cannot reach Ollama at {self.base_url}: {e}") from e
         if r.status_code != 200:
             raise ProviderError(f"Ollama error {r.status_code}: {r.text[:300]}")
-        return r.json().get("message", {}).get("content", "")
+        data = r.json()
+        self.truncated = data.get("done_reason") == "length"
+        return data.get("message", {}).get("content", "")
 
     async def check(self):
         async with self._client() as c:
@@ -126,6 +139,7 @@ class AnthropicProvider(Provider):
         if r.status_code != 200:
             raise ProviderError(f"Claude error {r.status_code}: {r.text[:300]}")
         data = r.json()
+        self.truncated = data.get("stop_reason") == "max_tokens"
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
 
     async def check(self):
@@ -161,6 +175,7 @@ class GeminiProvider(Provider):
         cands = r.json().get("candidates") or []
         if not cands:
             raise ProviderError("Gemini returned no answer (possibly blocked by safety filters)")
+        self.truncated = cands[0].get("finishReason") == "MAX_TOKENS"
         parts = cands[0].get("content", {}).get("parts", [])
         return "".join(p.get("text", "") for p in parts)
 

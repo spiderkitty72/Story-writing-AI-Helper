@@ -43,6 +43,14 @@ class Agent:
     temperature: float | None = None
     system: str = ""
     task: str = "{instructions}"
+    # Size of each piece of text sent to this agent (tokens). Small local
+    # models do much better with small pieces. Falls back to settings.yaml.
+    chunk_tokens: int | None = None
+    # Allowed answer length compared with the input, e.g. [0.85, 1.2]. An
+    # answer outside this range is retried once, then the original is kept.
+    length_ratio: list[float] | None = None
+    # Require the answer to have the same number of paragraphs (proofreading).
+    keep_paragraphs: bool = False
 
 
 @dataclass
@@ -112,6 +120,11 @@ def parse_config(settings: dict, agents: dict, workflows: dict, base_dir: Path |
         agent = Agent(name=name, **a)
         if agent.mode not in ("edit", "report"):
             raise ConfigError(f"agent '{name}' mode must be 'edit' or 'report'")
+        if agent.length_ratio is not None and (
+            not isinstance(agent.length_ratio, list) or len(agent.length_ratio) != 2
+            or not all(isinstance(x, (int, float)) for x in agent.length_ratio)
+        ):
+            raise ConfigError(f"agent '{name}' length_ratio must be a list like [0.8, 1.3]")
         if agent.provider and agent.provider not in providers:
             raise ConfigError(f"agent '{name}' uses unknown provider '{agent.provider}'")
         agent_map[name] = agent
