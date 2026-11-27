@@ -38,6 +38,7 @@ const S = {
   decisions: {},     // chunkIndex -> {changeId: bool}
   graph: { entities: [], relations: [] },
   editingEntity: null,
+  chat: [],
   watching: new Set(),
 };
 
@@ -72,6 +73,11 @@ function updateTaskDesc() {
   const [kind, name] = [v.slice(0, 2), v.slice(3)];
   const item = kind === "wf" ? S.config.workflows.find((w) => w.name === name) : S.config.agents.find((a) => a.name === name);
   $("taskDesc").textContent = item ? item.description : "";
+  const writes = !!item && item.mode === "write";
+  $("scopeLabel").classList.toggle("hidden", writes);
+  $("writeOpts").classList.toggle("hidden", !writes);
+  const agent = kind === "ag" ? item : item && S.config.agents.find((a) => a.name === item.steps[0]);
+  $("wordsInput").placeholder = (agent && agent.words) || 250;
 }
 $("taskSelect").addEventListener("change", updateTaskDesc);
 
@@ -99,6 +105,7 @@ async function openBook(id) {
   const ch = chs.find((c) => c.id === remembered) || chs[0];
   if (ch) await openChapter(ch.id, true); else clearEditor();
   refreshReviewBadge();
+  loadChat();
 }
 async function refreshBook() {
   S.bookData = await api(`/api/books/${encodeURIComponent(S.book)}`);
@@ -159,6 +166,7 @@ async function openChapter(id, skipConfirm = false) {
   $("chapterTitle").textContent = info ? info.title : id;
   renderChapterList();
   updateCounts();
+  updateAiBar();
   if (!$("preview").classList.contains("hidden")) renderPreview();
 }
 async function saveChapter() {
@@ -229,29 +237,145 @@ $("previewToggle").addEventListener("change", (e) => {
 });
 
 // ---------- run AI ----------
-$("runBtn").addEventListener("click", guard(async () => {
+function taskOf(name) {
+  if (name.startsWith("wf:")) return S.config.workflows.find((w) => w.name === name.slice(3));
+  return S.config.agents.find((a) => a.name === name.slice(3));
+}
+// opts: {task: "ag:name"|"wf:name", instructions, scope: "chapter"|"selection", words}
+async function runTask(opts) {
   if (!S.chapter) return toast("Open a chapter first", true);
+  const ed = $("editor");
+  const sel = { start: ed.selectionStart, end: ed.selectionEnd };
   await saveChapter();
-  const v = $("taskSelect").value;
+  const item = taskOf(opts.task);
+  if (!item) return toast("Unknown task", true);
   const body = {
     chapter: S.chapter,
-    instructions: $("instructions").value,
+    instructions: opts.instructions || "",
     provider: $("providerSelect").value || null,
     model: $("modelInput").value.trim() || null,
     use_knowledge: $("useKnowledge").checked,
   };
-  if (v.startsWith("wf:")) body.workflow = v.slice(3); else body.agent = v.slice(3);
+  if (opts.task.startsWith("wf:")) body.workflow = item.name; else body.agent = item.name;
   if ($("chunkInput").value) body.chunk_tokens = +$("chunkInput").value;
   if ($("overlapInput").value !== "") body.overlap_tokens = +$("overlapInput").value;
-  if ($("scopeSelect").value === "selection") {
-    const ed = $("editor");
-    if (ed.selectionStart === ed.selectionEnd) return toast("Select some text in the editor first", true);
-    body.start = ed.selectionStart; body.end = ed.selectionEnd;
+  if (item.mode === "write") {
+    body.start = sel.end; body.end = sel.end; // write at the cursor / after the selection
+    if (opts.words) body.words = opts.words;
+    if (item.name === "write" || (item.steps && item.steps[0] === "write")) {
+      if (!body.instructions.trim()) return toast("Type what you want the AI to write", true);
+    }
+  } else if (opts.scope === "selection") {
+    if (sel.start === sel.end) return toast("Select some text in the editor first", true);
+    body.start = sel.start; body.end = sel.end;
   }
   if (body.agent === "custom" && !body.instructions.trim()) return toast("Type some instructions for the custom task", true);
   const job = await api(`/api/books/${encodeURIComponent(S.book)}/run`, { method: "POST", body });
   $("runStatus").textContent = "Started. Progress is shown in the sidebar.";
   watchJob(job.id, S.book);
+}
+$("runBtn").addEventListener("click", guard(() => runTask({
+  task: $("taskSelect").value,
+  instructions: $("instructions").value,
+  scope: $("scopeSelect").value,
+  words: +$("wordsInput").value || null,
+})));
+
+// Quick AI bar above the editor: acts on the selection, or writes at the cursor.
+function hasSelection() { const ed = $("editor"); return ed.selectionStart !== ed.selectionEnd; }
+function updateAiBar() {
+  const ed = $("editor");
+  const sel = hasSelection();
+  $("aiBarSel").classList.toggle("hidden", !sel);
+  $("aiBarCursor").classList.toggle("hidden", sel);
+  if (sel) {
+    const words = (ed.value.slice(ed.selectionStart, ed.selectionEnd).match(/\S+/g) || []).length;
+    $("aiBarLabel").textContent = `${words} word${words === 1 ? "" : "s"} selected:`;
+    $("aiBarInput").placeholder = "Ask for a change, e.g. make her sound angrier";
+  } else {
+    $("aiBarLabel").textContent = "At the cursor:";
+    $("aiBarInput").placeholder = "Or ask it to write something, e.g. a short fight in the rain";
+  }
+}
+["select", "keyup", "mouseup", "input", "focus"].forEach((ev) => $("editor").addEventListener(ev, updateAiBar));
+$("aiBar").addEventListener("mousedown", (e) => { if (e.target.tagName === "BUTTON") e.preventDefault(); });
+$("aiBar").addEventListener("click", guard(async (e) => {
+  const q = e.target.dataset.quick;
+  if (!q) return;
+  if (!S.config.agents.some((a) => a.name === q)) return toast(`There is no '${q}' agent in agents.yaml`, true);
+  await runTask({ task: "ag:" + q, instructions: $("aiBarInput").value.trim(), scope: "selection" });
+}));
+async function aiBarGo() {
+  const text = $("aiBarInput").value.trim();
+  if (!text) return toast("Type what you want first", true);
+  if (hasSelection()) await runTask({ task: "ag:custom", instructions: text, scope: "selection" });
+  else await runTask({ task: "ag:write", instructions: text });
+  $("aiBarInput").value = "";
+}
+$("aiBarGo").addEventListener("click", guard(aiBarGo));
+$("aiBarInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); guard(aiBarGo)(); } });
+
+// ---------- chat ----------
+document.querySelectorAll(".subtabs button").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".subtabs button").forEach((x) => x.classList.toggle("active", x === b));
+  $("sub-tasks").classList.toggle("hidden", b.dataset.sub !== "tasks");
+  $("sub-chat").classList.toggle("hidden", b.dataset.sub !== "chat");
+}));
+const chatKey = () => "chat:" + S.book;
+function loadChat() {
+  try { S.chat = JSON.parse(localStorage.getItem(chatKey()) || "[]"); } catch { S.chat = []; }
+  renderChat();
+}
+function storeChat() { try { localStorage.setItem(chatKey(), JSON.stringify(S.chat.slice(-40))); } catch { /* private mode */ } }
+function renderChat(pending = false) {
+  $("chatLog").innerHTML = S.chat.map((m, i) => `<div class="msg ${m.role}"><div class="msg-text">${esc(m.content)}</div>` +
+    (m.role === "assistant" ? `<div class="msg-actions"><button class="ghost small" data-insert="${i}" title="Adds this text at the cursor, through Review">Insert at cursor</button></div>` : "") +
+    `</div>`).join("") + (pending ? `<div class="msg assistant muted">Thinking…</div>` : "") ||
+    `<div class="muted small-text">No messages yet.</div>`;
+  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+}
+async function sendChat() {
+  const message = $("chatInput").value.trim();
+  if (!message || $("chatSendBtn").disabled) return;
+  const ed = $("editor");
+  const history = S.chat.slice(-8);
+  S.chat.push({ role: "user", content: message });
+  $("chatInput").value = "";
+  $("chatSendBtn").disabled = true;
+  renderChat(true);
+  try {
+    const r = await api(`/api/books/${encodeURIComponent(S.book)}/chat`, {
+      method: "POST",
+      body: { message, history, chapter: S.chapter, position: S.chapter ? ed.selectionEnd : null,
+        provider: $("providerSelect").value || null, model: $("modelInput").value.trim() || null,
+        use_knowledge: $("useKnowledge").checked },
+    });
+    S.chat.push({ role: "assistant", content: r.reply });
+  } catch (e) {
+    S.chat.pop();
+    $("chatInput").value = message;
+    throw e;
+  } finally {
+    $("chatSendBtn").disabled = false;
+    storeChat();
+    renderChat();
+  }
+}
+$("chatSendBtn").addEventListener("click", guard(sendChat));
+$("chatInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); guard(sendChat)(); } });
+$("chatClearBtn").addEventListener("click", () => { S.chat = []; storeChat(); renderChat(); });
+$("chatLog").addEventListener("click", guard(async (e) => {
+  const i = e.target.dataset.insert;
+  if (i === undefined) return;
+  if (!S.chapter) return toast("Open a chapter first", true);
+  const position = $("editor").selectionEnd;
+  await saveChapter();
+  const r = await api(`/api/books/${encodeURIComponent(S.book)}/reviews/insert`, {
+    method: "POST", body: { chapter: S.chapter, text: S.chat[+i].content, position },
+  });
+  refreshReviewBadge();
+  showTab("review");
+  await openReview(r.review_id);
 }));
 
 async function watchJob(id, book) {
@@ -348,6 +472,11 @@ function renderReview() {
     }).join("");
     const notes = c.notes.length ? `<div class="notes"><strong>Notes</strong><ul>${c.notes.map((n) => `<li><em>${esc(n.agent)}:</em> ${esc(n.text)}</li>`).join("")}</ul></div>` : "";
     const errors = c.errors.length ? `<div class="errors">⚠ ${c.errors.map(esc).join("<br>")}</div>` : "";
+    if (r.kind === "insert") {
+      const pre = r.anchor ? `<span class="ctx">…${esc(r.anchor.slice(-60))}</span>` : "";
+      const post = r.anchor_after ? `<span class="ctx">${esc(r.anchor_after.slice(0, 60))}…</span>` : "";
+      return `<div class="chunk">${errors}${notes}${pre}${body}${post}</div>`;
+    }
     return `<div class="chunk">${errors}${notes}${body}</div>`;
   }).join("");
 }
@@ -400,6 +529,7 @@ async function loadKnowledge() {
   if (!S.book) return;
   S.graph = await api(`/api/books/${encodeURIComponent(S.book)}/knowledge`);
   $("bookNotes").value = S.bookData.notes || "";
+  renderSummaries();
   renderEntityList();
   graphView.setData(S.graph);
 }
@@ -486,6 +616,19 @@ $("buildKgBtn").addEventListener("click", guard(async () => {
   });
   toast("Extracting knowledge… progress is in the sidebar.");
   watchJob(job.id, S.book);
+}));
+function renderSummaries() {
+  const sums = S.graph.summaries || {};
+  $("summaryList").innerHTML = S.bookData.chapters.map((c) =>
+    `<label>${esc(c.title)}<textarea rows="3" data-sum="${esc(c.id)}" placeholder="Not summarised yet">${esc(sums[c.id] || "")}</textarea></label>`).join("");
+}
+$("saveSummariesBtn").addEventListener("click", guard(async () => {
+  const sums = { ...(S.graph.summaries || {}) };
+  document.querySelectorAll("#summaryList textarea").forEach((t) => { sums[t.dataset.sum] = t.value.trim(); });
+  S.graph.summaries = sums;
+  await saveGraph();
+  renderSummaries();
+  toast("Summaries saved");
 }));
 $("saveNotesBtn").addEventListener("click", guard(async () => {
   await api(`/api/books/${encodeURIComponent(S.book)}`, { method: "PATCH", body: { notes: $("bookNotes").value } });

@@ -70,9 +70,10 @@ async def get_config():
     return {
         "default_provider": c.default_provider,
         "providers": [{"name": n, "type": p["type"], "model": p.get("model", "")} for n, p in c.providers.items()],
-        "agents": [{"name": a.name, "description": a.description, "mode": a.mode} for a in c.agents.values()],
-        "workflows": [{"name": w.name, "description": w.description, "steps": [s.agent for s in w.steps]}
-                      for w in c.workflows.values()],
+        "agents": [{"name": a.name, "description": a.description, "mode": a.mode, "words": a.words}
+                   for a in c.agents.values()],
+        "workflows": [{"name": w.name, "description": w.description, "steps": [s.agent for s in w.steps],
+                       "mode": c.agents[w.steps[0].agent].mode} for w in c.workflows.values()],
         "chunking": vars(c.chunking),
     }
 
@@ -200,6 +201,7 @@ class RunBody(BaseModel):
     chunk_tokens: int | None = None
     overlap_tokens: int | None = None
     use_knowledge: bool = True
+    words: int | None = None
 
 
 @app.post("/api/books/{book}/run")
@@ -226,7 +228,43 @@ async def cancel(job_id: str):
     return {"ok": True}
 
 
+# ---------- chat ----------
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatBody(BaseModel):
+    message: str
+    history: list[ChatMessage] = []
+    chapter: str | None = None
+    position: int | None = None
+    provider: str | None = None
+    model: str | None = None
+    use_knowledge: bool = True
+
+
+@app.post("/api/books/{book}/chat")
+async def chat(book: str, body: ChatBody):
+    state.storage.get_book(book)
+    reply = await engine.chat(book, body.chapter, body.position, [m.model_dump() for m in body.history],
+                              body.message, body.provider, body.model, body.use_knowledge)
+    return {"reply": reply}
+
+
 # ---------- reviews ----------
+class InsertBody(BaseModel):
+    chapter: str
+    text: str
+    position: int | None = None
+    label: str = "Inserted from chat"
+
+
+@app.post("/api/books/{book}/reviews/insert")
+async def insert_review(book: str, body: InsertBody):
+    return {"review_id": engine.create_insert_review(book, body.chapter, body.position, body.text, body.label)}
+
+
 class ApplyBody(BaseModel):
     decisions: dict[str, dict[str, bool]] = {}
     accept_all: bool = False
@@ -270,6 +308,8 @@ async def put_knowledge(book: str, body: dict[str, Any]):
     graph = {
         "entities": [kg.normalize_entity(e) for e in body.get("entities", []) if str(e.get("name", "")).strip()],
         "relations": [r for r in body.get("relations", []) if isinstance(r, dict)],
+        "summaries": kg.clean_summaries(body["summaries"]) if "summaries" in body
+        else state.storage.read_knowledge(book).get("summaries", {}),
     }
     ids = {e["id"] for e in graph["entities"]}
     graph["relations"] = [
@@ -289,5 +329,7 @@ async def build_knowledge(book: str, body: KnowledgeBuild):
 async def preview_knowledge(book: str, body: TextBody):
     """Show exactly what knowledge would be sent with a given passage."""
     c = state.config.chunking
-    return {"context": kg.render_context(state.storage.read_knowledge(book), body.text,
-                                         c.knowledge_tokens * c.chars_per_token)}
+    graph = state.storage.read_knowledge(book)
+    return {"context": kg.render_context(graph, body.text, c.knowledge_tokens * c.chars_per_token),
+            "story_so_far": kg.render_story_so_far(graph, state.storage.list_chapters(book),
+                                                   c.summary_tokens * c.chars_per_token)}

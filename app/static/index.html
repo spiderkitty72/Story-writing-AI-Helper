@@ -43,6 +43,21 @@
             <button id="deleteChapterBtn" class="ghost small danger">Delete</button>
             <button id="saveBtn" class="small">Save</button>
           </div>
+          <div id="aiBar" class="ai-bar" title="Quick AI actions for the selected text or the cursor">
+            <span class="ai-spark">✦</span>
+            <span id="aiBarLabel" class="muted small-text"></span>
+            <span id="aiBarSel" class="ai-actions hidden">
+              <button class="ghost small" data-quick="rewrite">Rewrite</button>
+              <button class="ghost small" data-quick="shorten">Shorten</button>
+              <button class="ghost small" data-quick="expand">Expand</button>
+              <button class="ghost small" data-quick="grammar">Fix grammar</button>
+            </span>
+            <span id="aiBarCursor" class="ai-actions">
+              <button class="ghost small" data-quick="continue">Continue the story</button>
+            </span>
+            <input id="aiBarInput" placeholder="Ask for a change…">
+            <button id="aiBarGo" class="small">Go</button>
+          </div>
           <div class="editor-wrap">
             <textarea id="editor" spellcheck="true" placeholder="Start writing in Markdown…"></textarea>
             <div id="preview" class="preview prose hidden"></div>
@@ -50,7 +65,11 @@
         </div>
 
         <div class="ai-col panel">
-          <h3>Ask the AI</h3>
+          <div class="subtabs">
+            <button data-sub="tasks" class="active">AI tasks</button>
+            <button data-sub="chat">Chat</button>
+          </div>
+          <div id="sub-tasks">
           <label>Task
             <select id="taskSelect"></select>
           </label>
@@ -58,12 +77,16 @@
           <label>Your instructions
             <textarea id="instructions" rows="5" placeholder="e.g. Add more detail to the market scene, but keep Mara's limp and the rainy autumn mood."></textarea>
           </label>
-          <label>Apply to
+          <label id="scopeLabel">Apply to
             <select id="scopeSelect">
               <option value="chapter">Whole chapter</option>
               <option value="selection">Selected text only</option>
             </select>
           </label>
+          <div id="writeOpts" class="hidden">
+            <p class="muted small-text">New text is written at the cursor (or after the selected text) and shown in Review before it goes into the chapter.</p>
+            <label>Length (words) <input id="wordsInput" type="number" min="20" step="50"></label>
+          </div>
           <details>
             <summary>Advanced</summary>
             <label>Provider
@@ -74,10 +97,21 @@
               <label>Chunk size (tokens) <input id="chunkInput" type="number" min="100" step="100"></label>
               <label>Overlap (tokens) <input id="overlapInput" type="number" min="0" step="50"></label>
             </div>
-            <label class="toggle"><input type="checkbox" id="useKnowledge" checked> Send relevant knowledge graph facts</label>
+            <label class="toggle"><input type="checkbox" id="useKnowledge" checked> Send the knowledge map and story so far</label>
           </details>
           <button id="runBtn" class="primary wide">Run</button>
           <div id="runStatus" class="muted small-text"></div>
+          </div>
+          <div id="sub-chat" class="hidden">
+            <p class="muted small-text">Ask about your story, brainstorm, or ask for a draft. The AI sees your book notes, the story so far, the knowledge map and the text around your cursor.</p>
+            <div id="chatLog" class="chat-log"></div>
+            <textarea id="chatInput" rows="3" placeholder="e.g. Give me three ways Mara could escape the market. (Enter sends, Shift+Enter for a new line)"></textarea>
+            <div class="row">
+              <button id="chatClearBtn" class="ghost small">Clear</button>
+              <span class="spacer"></span>
+              <button id="chatSendBtn" class="primary small">Send</button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -122,6 +156,11 @@
           <p class="muted small-text">Style, theme, tone and rules. Sent with every AI request.</p>
           <textarea id="bookNotes" rows="5" placeholder="e.g. Dark fantasy, third person past tense, British spelling. Magic always costs the user a memory."></textarea>
           <button id="saveNotesBtn" class="small">Save notes</button>
+
+          <h3 class="mt">Story so far</h3>
+          <p class="muted small-text">A short summary of each chapter. Summaries of earlier chapters are sent with every AI request so the AI knows what has happened. "Extract from text with AI" below fills them in; you can edit them.</p>
+          <div id="summaryList"></div>
+          <button id="saveSummariesBtn" class="small">Save summaries</button>
 
           <h3 class="mt">Knowledge graph</h3>
           <div class="row">

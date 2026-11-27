@@ -23,6 +23,16 @@ by one.
   continuity check (notes only), expand with detail, or a free-form *custom* task.
   You can add instructions to any task, and run it on a whole chapter or just
   the text you selected.
+- **Quick AI bar.** Highlight text and click *Rewrite*, *Shorten*, *Expand* or
+  *Fix grammar*, or type what you want changed ("make her sound angrier").
+  With nothing selected, *Continue the story* or type what to write ("a short
+  fight in the rain") and the AI writes new text at the cursor. New text is
+  shown in Review as an insertion, with the surrounding text for context.
+- **Chat about your story.** The *Chat* tab next to *AI tasks* lets you ask
+  questions ("what colour are Mara's eyes?"), brainstorm, or ask for a draft.
+  The AI sees the book notes, the story so far, the knowledge map and the text
+  around your cursor. *Insert at cursor* sends an answer into the chapter
+  through Review.
 - **Review with highlighted changes.** Word-level diffs: removed text in red,
   added text in green. Click any change to reject or accept it, or use Accept
   all / Reject all, then *Apply to chapter*. A backup of the chapter is saved
@@ -32,7 +42,9 @@ by one.
   the AI edits a passage, only the entities mentioned near that passage (plus
   any you *pin*) are sent along as a compact summary, so vital facts are kept
   with few tokens. *Book notes* (style, tone, theme, world rules) are sent with
-  every request.
+  every request. Extraction also writes a short summary of each chapter
+  (*Story so far*, editable); summaries of the earlier chapters are sent with
+  every request so the AI knows what has already happened.
 - **Configurable agents and workflows.** Agents (prompt, provider, model,
   temperature, edit or notes mode) and workflows (chains of agents) are YAML
   files you can edit in the app's *Settings* tab or in `config/`.

@@ -32,3 +32,10 @@ workflows:
       - agent: expand
       - agent: grammar
         instructions: Only fix errors; do not shorten the text.
+
+  write_and_proofread:
+    description: Write new text at the cursor from your instructions, then proofread it.
+    steps:
+      - agent: write
+      - agent: grammar
+        instructions: Only fix errors; do not shorten the text.

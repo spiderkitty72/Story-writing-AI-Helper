@@ -119,3 +119,26 @@ def test_diff_handles_added_and_removed_paragraphs():
     c = "One.\n\nThree.\n"
     segs = diff_segments(a, c)
     assert apply_decisions(segs, default=True) == c and apply_decisions(segs) == a
+
+
+def test_join_insert_and_write_cleanup():
+    from app.prompts import clean_write_output, join_insert
+
+    assert join_insert("Para one.", "New.", "") == "\n\nNew.\n"
+    assert join_insert("Para one.\n\n", "New.", "Next.") == "New.\n\n"
+    assert join_insert("She said", "very quietly", ", then left.") == " very quietly"
+    assert join_insert("She said ", "very quietly", " then") == "very quietly"
+    before = "Mara walked to the gate and looked up at the sky."
+    out = clean_write_output("Sure, here you go:\n" + before + " Then it rained.", before)
+    assert out == "Then it rained."
+    assert clean_write_output("Okay, she thought. Fine.") == "Okay, she thought. Fine."
+
+
+def test_story_so_far_keeps_latest_chapters():
+    from app.knowledge import render_story_so_far
+
+    graph = {"summaries": {"a": "A" * 50, "b": "B" * 50, "c": "C" * 50}}
+    chapters = [{"id": x, "title": x.upper()} for x in "abc"]
+    out = render_story_so_far(graph, chapters, 120, until="c")
+    assert "B" * 50 in out and "C" * 50 not in out
+    assert out.count("\n") <= 1

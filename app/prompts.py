@@ -42,6 +42,21 @@ RETRY_PARAGRAPHS = (
 )
 
 
+WRITE_MARK = "Write only the NEW text"
+WRITE_RULES = (
+    "Output rules:\n"
+    "- " + WRITE_MARK + " that goes at the insertion point.\n"
+    "- Do not repeat, summarise or rewrite the story text before or after it.\n"
+    "- Keep the same tense, point of view, characters and style as the story.\n"
+    "- Use blank lines between paragraphs.\n"
+    "- Output only the story text itself: no title, no notes, no explanation."
+)
+RETRY_EMPTY = (
+    "IMPORTANT: your previous answer did not contain any new story text. Write the new "
+    "text now, as story prose, without repeating the text before it."
+)
+
+
 def build_system(
     agent_system: str,
     *,
@@ -49,17 +64,26 @@ def build_system(
     after: str = "",
     knowledge: str = "",
     book_notes: str = "",
+    story_so_far: str = "",
+    where: str = "the passage",
 ) -> str:
+    """System message: the agent's role plus labelled read-only background.
+
+    ``where`` names what the background surrounds ("the passage" for edits,
+    "the insertion point" when writing new text).
+    """
     parts = [agent_system.strip()]
     bg = []
     if book_notes.strip():
         bg.append(f"About this book (style, theme, rules):\n{book_notes.strip()}")
+    if story_so_far.strip():
+        bg.append(f"The story so far (chapter summaries):\n{story_so_far.strip()}")
     if knowledge.strip():
         bg.append(f"Story knowledge (facts that must stay consistent):\n{knowledge.strip()}")
     if before.strip():
-        bg.append(f"The story text that comes just BEFORE the passage:\n\"\"\"\n{before.strip()}\n\"\"\"")
+        bg.append(f"The story text that comes just BEFORE {where}:\n\"\"\"\n{before.strip()}\n\"\"\"")
     if after.strip():
-        bg.append(f"The story text that comes just AFTER the passage:\n\"\"\"\n{after.strip()}\n\"\"\"")
+        bg.append(f"The story text that comes just AFTER {where}:\n\"\"\"\n{after.strip()}\n\"\"\"")
     if bg:
         parts.append(
             "BACKGROUND (reference only). Use it to stay consistent. Never edit it, never "
@@ -81,6 +105,117 @@ def build_prompt(task: str, instructions: str, text: str, *, mode: str = "edit",
     if mode == "edit":
         sections.append("Now write the revised passage.")
     return "\n\n".join(sections)
+
+
+def build_write_prompt(task: str, instructions: str, *, words: int, has_before: bool,
+                       has_after: bool, extra: str = "") -> str:
+    """User message for agents that write NEW text at an insertion point."""
+    task_text = task.replace("{instructions}", instructions.strip()).strip()
+    if not task_text:
+        task_text = "Continue the story."
+    where = []
+    if has_before:
+        where.append("Your text starts right after the text BEFORE ends, so pick up exactly where it stops.")
+    if has_after:
+        where.append("Your text must lead naturally into the text AFTER.")
+    sections = [f"TASK:\n{task_text}"]
+    if where:
+        sections.append(" ".join(where))
+    sections.append(f"Length: about {words} words.")
+    sections.append(WRITE_RULES)
+    if extra:
+        sections.append(extra)
+    sections.append("Now write the new text.")
+    return "\n\n".join(sections)
+
+
+def clean_write_output(answer: str, before: str = "", after: str = "") -> str:
+    """Strip wrappers and any copy of the surrounding story from new text."""
+    out = answer.replace("\r\n", "\n")
+    out = re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
+    first, _, rest = out.partition("\n")
+    if rest.strip() and len(first) < 120 and (
+        first.rstrip().endswith(":") or re.match(r"^(here is|here's|here are|below is|sure[,!.]|certainly[,!.])", first, re.I)
+    ):
+        out = rest.strip()
+    m = _FENCE_RE.match(out)
+    if m:
+        out = m.group(1)
+    m = _POSTSCRIPT_RE.search(out)
+    if m:
+        out = out[: m.start()]
+    out = _strip_echo(out, "", before, after).strip()
+    if out.startswith('"""') and out.endswith('"""'):
+        out = out[3:-3].strip()
+    # a model that repeats the last sentence of the text before
+    b = before.strip()
+    if b:
+        last = re.split(r"(?<=[.!?\"\u201d])\s+", b)[-1].strip()
+        if len(last) >= 20 and out.startswith(last):
+            out = out[len(last):].lstrip()
+    return out
+
+
+def join_insert(before: str, new: str, after: str) -> str:
+    """Add the whitespace needed to put ``new`` between ``before`` and ``after``."""
+    new = new.strip()
+    if not new:
+        return ""
+    paragraph_mode = not before or not after or before.endswith("\n") or after.startswith("\n")
+    if paragraph_mode:
+        if not before or before.endswith("\n\n"):
+            lead = ""
+        elif before.endswith("\n"):
+            lead = "\n"
+        else:
+            lead = "\n\n"
+        if not after:
+            trail = "\n"
+        elif after.startswith("\n\n"):
+            trail = ""
+        elif after.startswith("\n"):
+            trail = "\n"
+        else:
+            trail = "\n\n"
+    else:  # cursor in the middle of a line
+        lead = "" if before[-1:].isspace() else " "
+        trail = "" if after[:1].isspace() or after[:1] in ".,;:!?" else " "
+    return lead + new + trail
+
+
+CHAT_SYSTEM = (
+    "You are a helpful writing partner for the author of the book described below. "
+    "You answer questions about the story, brainstorm ideas, suggest names and plot "
+    "twists, and draft text when asked. Base what you say about the existing story on "
+    "the background. If the background does not say, tell the author you do not know "
+    "instead of inventing facts about the story. Keep answers short and clear unless "
+    "the author asks for a long piece of writing."
+)
+
+
+def build_chat_prompt(history: list[dict[str, str]], question: str, max_chars: int = 6000) -> str:
+    """Flatten a short chat history into one user message (works with any provider)."""
+    lines: list[str] = []
+    used = 0
+    for m in reversed(history):
+        role = "Author" if m.get("role") == "user" else "You"
+        text = str(m.get("content", "")).strip()
+        if len(text) > 1500:
+            text = text[:1500] + " [...]"
+        if used + len(text) > max_chars:
+            break
+        lines.append(f"{role}: {text}")
+        used += len(text)
+    parts = []
+    if lines:
+        parts.append("CONVERSATION SO FAR:\n" + "\n\n".join(reversed(lines)))
+    parts.append(f"THE AUTHOR NOW SAYS:\n{question.strip()}")
+    parts.append("Reply to the author.")
+    return "\n\n".join(parts)
+
+
+def clean_chat_output(answer: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", answer.replace("\r\n", "\n"), flags=re.S).strip()
 
 
 def extract_target(prompt: str) -> str | None:

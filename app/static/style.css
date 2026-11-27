@@ -115,6 +115,27 @@ main { flex: 1; min-width: 0; overflow: auto; padding: 14px; }
 .prose { font: 17px/1.7 Georgia, "Iowan Old Style", serif; }
 .ai-col { align-self: start; position: sticky; top: 0; }
 
+.ai-bar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; padding: 6px 8px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+}
+.ai-bar input { flex: 1; min-width: 180px; width: auto; padding: 4px 8px; }
+.ai-spark { color: var(--accent); font-weight: 700; }
+.ai-actions { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+.subtabs { display: flex; gap: 4px; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.subtabs button { background: transparent; color: var(--muted); border-color: transparent; padding: 3px 10px; }
+.subtabs button.active { color: var(--text); border-color: var(--border); background: var(--bg); }
+.chat-log {
+  max-height: 52vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin: 6px 0 8px;
+}
+.msg { border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+.msg-text { white-space: pre-wrap; word-wrap: break-word; }
+.msg.user { background: var(--bg); border: 1px solid var(--border); align-self: flex-end; max-width: 90%; }
+.msg.assistant { background: var(--note-bg); }
+.msg-actions { margin-top: 6px; text-align: right; }
+.ctx { color: var(--muted); }
+
 .review-grid { display: grid; grid-template-columns: 240px 1fr; gap: 14px; }
 .review-body { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px 26px; }
 .prose-plain { font: 17px/1.75 Georgia, "Iowan Old Style", serif; white-space: pre-wrap; word-wrap: break-word; }
