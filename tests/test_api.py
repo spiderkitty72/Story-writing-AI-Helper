@@ -285,3 +285,64 @@ def test_knowledge_summaries_feed_later_chapters_and_chat(client):
                       json={"chapter": ch2, "text": "She is tired.", "position": 7}).json()["review_id"]
     client.post(f"/api/books/{book}/reviews/{rid}/apply", json={"accept_all": True})
     assert client.get(f"/api/books/{book}/chapters/{ch2}").json()["text"] == "# Two\n\nShe is tired.\n\nShe waits.\n"
+
+
+def test_outline_snapshots_and_replace(client):
+    book, ch = _chapter(client, "# One\n\nMara met Tom. Tomorrow Mara leaves.\n")
+    assert client.patch(f"/api/books/{book}/outline/{ch}", json={"synopsis": "Mara meets Tom.", "status": "revised"}).status_code == 200
+    assert client.patch(f"/api/books/{book}/outline/{ch}", json={"status": "bogus"}).status_code == 400
+    o = client.get(f"/api/books/{book}/outline").json()
+    assert o["chapters"][0]["synopsis"] == "Mara meets Tom." and o["chapters"][0]["status"] == "revised"
+
+    hits = client.post(f"/api/books/{book}/search", json={"query": "tom", "whole_word": True}).json()
+    assert hits[0]["count"] == 1  # not "Tomorrow"
+    r = client.post(f"/api/books/{book}/replace", json={"query": "Mara", "replacement": "Mira", "case": True,
+                                                         "whole_word": True}).json()
+    assert r["replaced"] == 2
+    assert client.get(f"/api/books/{book}/chapters/{ch}").json()["text"] == "# One\n\nMira met Tom. Tomorrow Mira leaves.\n"
+
+    snaps = client.get(f"/api/books/{book}/chapters/{ch}/snapshots").json()
+    assert len(snaps) == 1 and "replacing" in snaps[0]["label"]
+    snap = client.get(f"/api/books/{book}/chapters/{ch}/snapshots/{snaps[0]['id']}").json()
+    assert "Mara met Tom" in snap["text"] and any(s["type"] == "change" for s in snap["segments"])
+    client.post(f"/api/books/{book}/chapters/{ch}/snapshots/{snaps[0]['id']}/restore")
+    assert "Mara met Tom" in client.get(f"/api/books/{book}/chapters/{ch}").json()["text"]
+    assert len(client.get(f"/api/books/{book}/chapters/{ch}/snapshots").json()) == 2  # restore backs up first
+    assert client.get(f"/api/books/{book}/chapters/{ch}/snapshots/..%2Fx").status_code in (400, 404)
+
+
+def test_timeline_and_templates_reach_the_prompt(client):
+    _use_writer(client)
+    book, ch = _chapter(client, "# One\n\nMara waits.\n")
+    t = client.put(f"/api/books/{book}/timeline", json={
+        "threads": [{"id": "a", "name": "Escape"}],
+        "events": [{"title": "Mara steals the key", "chapter": ch, "thread": "a", "notes": "at night"},
+                   {"title": ""}]}).json()
+    assert len(t["events"]) == 1 and t["threads"][0]["color"]
+    client.put(f"/api/books/{book}/knowledge", json={"entities": [
+        {"name": "Mara", "type": "character", "fields": {"goal": "find her brother", "fear": ""}}]})
+    wait(client, client.post(f"/api/books/{book}/run", json={"chapter": ch, "agent": "continue"}).json()["id"])
+    system = WriterProvider.prompts[-1][0]
+    assert "[Escape] Mara steals the key: at night" in system
+    assert "Goal (what they want): find her brother" in system and "Fear" not in system
+    assert client.get("/api/config").json()["entity_fields"]["character"]
+
+
+def test_style_check():
+    from app.style import analyze
+
+    text = ("# Title\n\nShe walked slowly to the door. The door was opened by the guard. "
+            "She felt very cold. " + "It was a long day and " * 10 + "then she slept.")
+    r = analyze(text)
+    types = {i["type"] for i in r["issues"]}
+    assert {"adverb", "passive", "filter", "weak", "long_sentence", "repeated_phrase", "echo"} <= types
+    assert all(text[i["start"]:i["end"]] == i["text"] for i in r["issues"])
+    assert not any(i["start"] < 9 for i in r["issues"])  # the heading is ignored
+    assert r["stats"]["words"] > 20
+
+
+def test_pwa_files(client):
+    sw = client.get("/sw.js")
+    assert sw.status_code == 200 and "/api/" in sw.text
+    m = client.get("/manifest.webmanifest").json()
+    assert m["display"] == "standalone" and m["icons"]

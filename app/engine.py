@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app import knowledge as kg
+from app import tools
 from app.chunking import chunk_text
 from app.config import Config, WorkflowStep
 from app.diffing import apply_decisions, count_changes, diff_segments
@@ -119,9 +120,18 @@ class Engine:
         raise ValueError("Choose an agent or a workflow")
 
     def _story_so_far(self, book: str, graph: dict[str, Any], chapter: str | None) -> str:
+        """Chapter summaries (AI summary, else the author's outline synopsis)."""
         cs = self._config().chunking
-        chapters = self._storage().list_chapters(book)
-        return kg.render_story_so_far(graph, chapters, cs.summary_tokens * cs.chars_per_token, until=chapter)
+        storage = self._storage()
+        chapters = storage.list_chapters(book)
+        merged = {**tools.synopses(storage, book), **(graph.get("summaries") or {})}
+        return kg.render_story_so_far({"summaries": merged}, chapters, cs.summary_tokens * cs.chars_per_token,
+                                      until=chapter)
+
+    def _plan(self, book: str, chapter: str | None) -> str:
+        cs = self._config().chunking
+        return tools.render_plan(tools.read_timeline(self._storage(), book), chapter,
+                                 cs.knowledge_tokens * cs.chars_per_token // 2)
 
     def _start(self, kind: str, label: str, coro_fn) -> Job:
         job = Job(id=uuid.uuid4().hex[:10], kind=kind, label=label)
@@ -177,6 +187,7 @@ class Engine:
         results: list[dict[str, Any]] = []
         revised_so_far = text[:start]
         ctx = {"graph": graph, "book_notes": book_notes, "story_so_far": story_so_far,
+               "plan": self._plan(req.book, req.chapter) if req.use_knowledge else "",
                "errors_in_a_row": 0, "single": len(chunks) == 1}
         for ch in chunks:
             if job.cancelled:
@@ -218,7 +229,8 @@ class Engine:
             knowledge = kg.render_context(ctx["graph"], before + current + after,
                                           cs.knowledge_tokens * cs.chars_per_token) if req.use_knowledge else ""
             system = build_system(agent.system, before=before, after=after, knowledge=knowledge,
-                                  book_notes=ctx["book_notes"], story_so_far=ctx["story_so_far"])
+                                  book_notes=ctx["book_notes"], story_so_far=ctx["story_so_far"],
+                                  plan=ctx.get("plan", ""))
             temperature = step.temperature if step.temperature is not None else agent.temperature
             model = req.model or step.model or agent.model
             extra = ""
@@ -284,8 +296,10 @@ class Engine:
         provider = self.provider(req.provider or step.provider or agent.provider)
         knowledge = kg.render_context(graph, before + after + "\n" + instructions,
                                       cs.knowledge_tokens * cs.chars_per_token) if req.use_knowledge else ""
+        plan = self._plan(req.book, req.chapter) if req.use_knowledge else ""
         system = build_system(agent.system, before=before, after=after, knowledge=knowledge,
-                              book_notes=book_notes, story_so_far=story_so_far, where="the insertion point")
+                              book_notes=book_notes, story_so_far=story_so_far, plan=plan,
+                              where="the insertion point")
         temperature = step.temperature if step.temperature is not None else agent.temperature
         model = req.model or step.model or agent.model
         job.message = f"Writing: {agent.name}"
@@ -309,7 +323,7 @@ class Engine:
         job.progress = 1
         notes: list[dict[str, str]] = []
         if len(steps) > 1:
-            ctx = {"graph": graph, "book_notes": book_notes, "story_so_far": story_so_far,
+            ctx = {"graph": graph, "book_notes": book_notes, "story_so_far": story_so_far, "plan": plan,
                    "errors_in_a_row": 0, "single": True}
             new, notes, more = await self._apply_steps(job, req, steps[1:], new, before, after, ctx, "New text")
             errors += more
@@ -372,11 +386,11 @@ class Engine:
         recent = " ".join(m.get("content", "") for m in history[-4:])
         knowledge = kg.render_context(graph, before + after + recent + "\n" + message,
                                       cs.knowledge_tokens * cs.chars_per_token) if use_knowledge else ""
-        story = kg.render_story_so_far(graph, storage.list_chapters(book),
-                                       cs.summary_tokens * cs.chars_per_token) if use_knowledge else ""
+        story = self._story_so_far(book, graph, None) if use_knowledge else ""
+        plan = self._plan(book, chapter) if use_knowledge else ""
         system = build_system(CHAT_SYSTEM, before=before, after=after, knowledge=knowledge,
                               book_notes=storage.get_book(book).get("notes", ""), story_so_far=story,
-                              where="the author's cursor")
+                              plan=plan, where="the author's cursor")
         provider = self.provider(provider_name)
         answer = await provider.complete(system, build_chat_prompt(history, message), model=model, temperature=0.7)
         return clean_chat_output(answer)

@@ -65,6 +65,7 @@ def build_system(
     knowledge: str = "",
     book_notes: str = "",
     story_so_far: str = "",
+    plan: str = "",
     where: str = "the passage",
 ) -> str:
     """System message: the agent's role plus labelled read-only background.
@@ -78,6 +79,8 @@ def build_system(
         bg.append(f"About this book (style, theme, rules):\n{book_notes.strip()}")
     if story_so_far.strip():
         bg.append(f"The story so far (chapter summaries):\n{story_so_far.strip()}")
+    if plan.strip():
+        bg.append(f"The author's plan for this chapter (planned events):\n{plan.strip()}")
     if knowledge.strip():
         bg.append(f"Story knowledge (facts that must stay consistent):\n{knowledge.strip()}")
     if before.strip():

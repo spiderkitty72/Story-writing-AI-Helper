@@ -15,6 +15,7 @@ from app import knowledge as kg
 from app.engine import EditRequest, Engine
 from app.providers import ProviderError
 from app.storage import Conflict, NotFound, Storage
+from app.tools_api import make_router
 
 STATIC = Path(__file__).parent / "static"
 
@@ -32,6 +33,7 @@ class State:
 state = State()
 engine = Engine(lambda: state.config, lambda: state.storage)
 app = FastAPI(title="Story Writing AI Helper")
+app.include_router(make_router(lambda: state.storage))
 
 
 @app.exception_handler(NotFound)
@@ -60,6 +62,19 @@ async def index():
     return FileResponse(STATIC / "index.html")
 
 
+# The service worker and manifest are served from the root so the installed
+# app (PWA) covers the whole site.
+@app.get("/sw.js")
+async def service_worker():
+    return FileResponse(STATIC / "sw.js", media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.get("/manifest.webmanifest")
+async def manifest():
+    return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json")
+
+
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -75,6 +90,7 @@ async def get_config():
         "workflows": [{"name": w.name, "description": w.description, "steps": [s.agent for s in w.steps],
                        "mode": c.agents[w.steps[0].agent].mode} for w in c.workflows.values()],
         "chunking": vars(c.chunking),
+        "entity_fields": kg.ENTITY_FIELDS,
     }
 
 

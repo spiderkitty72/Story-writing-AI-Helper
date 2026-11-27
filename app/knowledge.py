@@ -15,6 +15,22 @@ from typing import Any
 
 ENTITY_TYPES = ["character", "place", "object", "event", "group", "concept"]
 
+# Fill-in sheets per entity type (like a codex template). Filled fields are
+# sent to the AI with the entity, so keep the answers short.
+ENTITY_FIELDS: dict[str, list[list[str]]] = {
+    "character": [["role", "Role in the story"], ["age", "Age"], ["appearance", "Appearance"],
+                  ["personality", "Personality"], ["voice", "How they talk"], ["goal", "Goal (what they want)"],
+                  ["fear", "Fear or flaw"], ["secret", "Secret"], ["backstory", "Backstory"],
+                  ["arc", "How they change"]],
+    "place": [["looks", "What it looks like"], ["senses", "Sounds, smells, feel"],
+              ["people", "Who is found there"], ["history", "History"], ["mood", "Mood"]],
+    "object": [["looks", "What it looks like"], ["owner", "Owner"], ["power", "What it does"],
+               ["origin", "Where it came from"]],
+    "event": [["when", "When"], ["where", "Where"], ["who", "Who was involved"], ["result", "What it changed"]],
+    "group": [["purpose", "Purpose"], ["leader", "Leader"], ["members", "Members"], ["symbols", "Symbols, dress"]],
+    "concept": [["rules", "Rules"], ["limits", "Limits and costs"], ["who_knows", "Who knows about it"]],
+}
+
 EXTRACT_SYSTEM = (
     "You extract a knowledge graph from book manuscripts. You answer with JSON only."
 )
@@ -105,6 +121,9 @@ def normalize_entity(raw: dict[str, Any]) -> dict[str, Any]:
         "description": str(raw.get("description") or "").strip(),
         "facts": [str(f).strip() for f in raw.get("facts") or [] if str(f).strip()],
         "pinned": bool(raw.get("pinned", False)),
+        "fields": {str(k): str(v).strip() for k, v in (raw.get("fields") or {}).items()
+                   if isinstance(v, (str, int, float)) and str(v).strip()}
+        if isinstance(raw.get("fields"), dict) else {},
     }
 
 
@@ -169,6 +188,11 @@ def render_context(graph: dict[str, Any], text: str, max_chars: int) -> str:
             line += f", also called {', '.join(e['aliases'])}"
         if e.get("description"):
             line += f": {e['description']}"
+        fields = e.get("fields") or {}
+        if fields:
+            labels = dict(ENTITY_FIELDS.get(e["type"], []))
+            line += " " + "; ".join(f"{labels.get(k, k.replace('_', ' ').capitalize())}: {v}"
+                                    for k, v in fields.items())
         if e.get("facts"):
             line += " Facts: " + "; ".join(e["facts"])
         if used + len(line) > max_chars:

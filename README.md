@@ -33,6 +33,31 @@ by one.
   The AI sees the book notes, the story so far, the knowledge map and the text
   around your cursor. *Insert at cursor* sends an answer into the chapter
   through Review.
+- **Plan tab.** *Outline* is a corkboard with a card per chapter: synopsis,
+  status (idea, outline, draft, revised, done), drag or ◀ ▶ to reorder.
+  *Timeline* is a grid of plot threads (rows) by chapters (columns); click + to
+  add an event and link characters to it. The events placed in a chapter are
+  sent to the AI as the plan for that chapter, and a synopsis is used as the
+  chapter summary until the AI has made one.
+- **History.** Every chapter keeps snapshots: one is saved automatically before
+  AI changes, find & replace and restores, and you can save one by hand. Compare
+  any snapshot with the current text and restore it.
+- **Find and replace** across the whole book (match case, whole words, regular
+  expressions; Ctrl/Cmd+Shift+F). In the knowledge map, *Rename everywhere*
+  renames a character in every chapter and in the knowledge map.
+- **Style check (no AI).** The *Style* tab finds long sentences, adverbs,
+  passive voice, filter and weak words, echoes and repeated phrases, and shows
+  reading ease and dialogue share. Click an item to select it in the editor.
+- **Character and place templates.** Entities have fill-in sheets (goal, fear,
+  voice, appearance… for characters; look, sounds and smells… for places).
+  Filled fields are sent to the AI with the entity.
+- **Brainstorm.** Buttons in *Chat* ask for what could happen next, plot twists,
+  "what if" questions, names, or sensory details, all based on your story.
+- **Phone friendly and installable.** The layout works on phones (the chapter
+  list opens from ☰). Open the site in Chrome/Edge/Safari and use *Install app*
+  or *Add to Home Screen* to use it like an app. The installable app needs
+  HTTPS (for example through your reverse proxy). Only the app's own files are
+  cached; your stories and API responses are never stored by it.
 - **Review with highlighted changes.** Word-level diffs: removed text in red,
   added text in green. Click any change to reject or accept it, or use Accept
   all / Reject all, then *Apply to chapter*. A backup of the chapter is saved
