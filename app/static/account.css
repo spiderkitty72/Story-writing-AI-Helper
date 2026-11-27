@@ -1,0 +1,14 @@
+/* Login, account and user management pages, plus the user menu in the top bar. */
+.user-menu { display: flex; gap: 6px; align-items: center; margin-left: 8px; }
+.user-menu a { text-decoration: none; }
+.auth-page { display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px; height: auto; min-height: 100%; }
+.auth-card { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 10px; }
+.auth-card h2 { margin: 0 0 6px; }
+.auth-error { color: var(--danger); margin: 0; min-height: 1.2em; }
+.auth-ok { color: var(--ins-text); margin: 0; min-height: 1.2em; }
+.account-wrap { max-width: 760px; margin: 0 auto; padding: 16px; }
+.account-wrap .table td, .account-wrap .table th { padding: 6px 8px; text-align: left; }
+.account-wrap form { display: flex; flex-direction: column; gap: 10px; }
+.account-wrap .row.wrap { flex-wrap: wrap; }
+.account-wrap .actions { display: flex; gap: 4px; flex-wrap: wrap; }
+#adminPanel h3:not(:first-child) { margin-top: 18px; }

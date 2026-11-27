@@ -4,13 +4,17 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+const csrfToken = () => (document.cookie.match(/(?:^|;\s*)storyhelper_csrf=([^;]+)/) || [])[1] || "";
+
 async function api(path, opts = {}) {
-  const init = { method: opts.method || "GET", headers: {} };
+  const init = { method: opts.method || "GET", headers: {}, credentials: "same-origin" };
+  if (init.method !== "GET") init.headers["X-CSRF-Token"] = csrfToken();
   if (opts.body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(opts.body);
   }
   const r = await fetch(path, init);
+  if (r.status === 401) { location.href = "/login"; throw new Error("Please log in"); }
   const type = r.headers.get("content-type") || "";
   const data = type.includes("json") ? await r.json() : await r.text();
   if (!r.ok) throw new Error((data && data.detail) ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)) : `HTTP ${r.status}`);
@@ -603,6 +607,7 @@ async function loadSettings() {
       if (td) { td.textContent = (r.ok ? "✓ " : "✗ ") + r.status; td.style.color = r.ok ? "" : "var(--danger)"; }
     }).catch(() => {});
   }
+  if (document.body.dataset.admin === "false") return; // only admins may read or change config files
   await loadCfgFile();
 }
 async function loadCfgFile() {

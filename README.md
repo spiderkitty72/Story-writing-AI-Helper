@@ -12,7 +12,7 @@ by one.
 ## Features
 
 - **Write in the app.** A Markdown editor with autosave, live preview, word
-  and token counts. Every chapter is a plain `.md` file in `data/books/<book>/chapters/`,
+  and token counts. Every chapter is a plain `.md` file in `data/users/<id>/books/<book>/chapters/`,
   so you can copy it anywhere. *Export .md* downloads the whole book as one file.
 - **Rolling context window.** Long chapters are split into chunks on paragraph
   boundaries (sentence boundaries for very long paragraphs). Each request sends
@@ -50,7 +50,7 @@ You need [Docker](https://docs.docker.com/get-docker/) with Docker Compose.
 ```bash
 git clone https://github.com/spiderkitty72/Story-writing-AI-Helper.git
 cd Story-writing-AI-Helper
-cp .env.example .env          # add API keys here if you want Claude or Gemini
+cp .env.example .env          # set ADMIN_USERNAME and ADMIN_PASSWORD, plus API keys if you want Claude or Gemini
 docker compose up -d --build
 ```
 
@@ -60,7 +60,10 @@ Then download a model into the bundled Ollama (once):
 docker compose exec ollama ollama pull llama3.1:8b
 ```
 
-Open <http://localhost:8000>. A book called *My Book* is created for you.
+Open <http://localhost:8000> and log in with the admin account from `.env`.
+A book called *My Book* is created for you. See
+[Accounts and secure remote access](#accounts-and-secure-remote-access) to add
+more writers and to reach the app over HTTPS.
 
 ### Using an Ollama that is already on your computer
 
@@ -75,6 +78,97 @@ task, or set `provider:` on an agent in `config/agents.yaml`, or change
 `default_provider` in `config/settings.yaml`. The *Settings* tab shows whether
 each provider is reachable.
 
+## Accounts and secure remote access
+
+Everyone logs in, and every user has their own private books. Admins can also
+add and manage users and edit the AI settings (`config/*.yaml`); writers can
+use every agent and provider but cannot change them.
+
+### The first admin
+
+Set these in `.env` before the first start:
+
+```ini
+ADMIN_USERNAME=josh
+ADMIN_PASSWORD=a-long-password-at-least-10-chars
+```
+
+The account is created only when there are no users yet, so you can delete
+`ADMIN_PASSWORD` from `.env` afterwards. Any books that were already in
+`data/books/` are moved to this first account.
+
+Or create accounts from the command line at any time:
+
+```bash
+docker compose exec app python -m app.users add josh --admin   # asks for a password
+docker compose exec app python -m app.users add sam            # a writer
+docker compose exec app python -m app.users passwd sam         # reset a forgotten password
+docker compose exec app python -m app.users list
+```
+
+Admins can also add users, reset passwords, disable and delete accounts on the
+**Account** page (click your name at the top right). Deleting a user keeps their
+files on disk in `data/users/<id>/`.
+
+### What the app does for security
+
+- Passwords are stored as salted **scrypt** hashes (at least 10 characters).
+- Logins use a random session cookie that is `HttpOnly`, `SameSite=Lax`, and
+  `Secure` over HTTPS. Only a hash of it is stored on the server. Sessions end
+  after 7 days without use or 30 days at most (`SESSION_IDLE_HOURS`,
+  `SESSION_MAX_DAYS`). Changing a password signs out all other devices.
+- **CSRF protection:** every request that changes something must send the
+  session's CSRF token, and requests from other websites (wrong `Origin`) are
+  refused.
+- **Login rate limiting:** after 5 failed logins for one username, or 10 from
+  one IP address, within 15 minutes, further tries are refused until the window
+  passes (`LOGIN_MAX_FAILS_PER_USER`, `LOGIN_MAX_FAILS_PER_IP`,
+  `LOGIN_LOCKOUT_MINUTES`). Failed logins are logged with the client IP.
+- **Security headers** on every page: a strict Content-Security-Policy (no
+  inline scripts, no framing), `X-Frame-Options: DENY`, `nosniff`,
+  `Referrer-Policy`, `Permissions-Policy`, and HSTS when reached over HTTPS.
+
+### Nginx Proxy Manager setup
+
+1. **Proxy host.** In NPM, *Hosts → Proxy Hosts → Add Proxy Host*:
+   - *Domain names*: e.g. `stories.example.com`
+   - *Scheme* `http`, *Forward Hostname / IP*: the machine running this app
+     (or the container name `app` if NPM is on the same Docker network),
+     *Forward Port* `8000`
+   - Turn on **Block Common Exploits**. **Websockets Support** is not needed
+     today (the app uses normal HTTP requests), but it does no harm to turn it on.
+2. **SSL tab.** Request a new Let's Encrypt certificate, and turn on **Force
+   SSL**, **HTTP/2 Support** and **HSTS Enabled**. (The app also sends HSTS
+   itself; set `HSTS=false` if you'd rather only NPM does.)
+3. **Advanced tab (optional).** NPM already passes `Host`, `X-Forwarded-For`,
+   `X-Forwarded-Proto` and `X-Real-IP`, and AI jobs run in the background, so
+   nothing needs to be added here.
+4. **Tell the app to trust NPM.** In `.env`:
+
+   ```ini
+   # The IP address (or Docker network range) NPM connects from.
+   FORWARDED_ALLOW_IPS=172.16.0.0/12
+   # Always mark cookies Secure (you reach the app through HTTPS).
+   COOKIE_SECURE=true
+   ```
+
+   Then `docker compose up -d`. Only connections from `FORWARDED_ALLOW_IPS`
+   may set the client IP and the `https` scheme through forwarded headers, so
+   nobody else can fake their IP to dodge the login rate limit. To find NPM's
+   address, look at the app's log (`docker compose logs app`): each request
+   shows the address it came from. Use `*` only if the app's port can be
+   reached by NPM and nothing else.
+5. **Keep the app's port private.** Only NPM should reach port 8000. If NPM runs
+   on the same machine, bind it to localhost with `APP_BIND=127.0.0.1` in `.env`
+   (or put NPM and the app on one Docker network and remove the port). Don't
+   forward port 8000, or Ollama's port 11434 (which has no password), on your
+   router; only forward 80 and 443 to NPM.
+
+If you serve the app on more than one address (for example both a LAN IP and a
+domain), all of them work; if a browser extension or another site needs to
+post to it, list it in `ALLOWED_ORIGINS` (comma separated, e.g.
+`https://other.example.com`).
+
 ## Running without Docker
 
 Python 3.11 or newer:
@@ -82,7 +176,7 @@ Python 3.11 or newer:
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+ADMIN_USERNAME=me ADMIN_PASSWORD=change-me-please uvicorn app.main:app --reload
 ```
 
 Books are stored in `./data` (change with `DATA_DIR`), configuration is read
@@ -203,7 +297,8 @@ and add it to `PROVIDER_TYPES`. Then reference its `type` in `settings.yaml`.
 ## Where things are stored
 
 ```
-data/books/<book>/
+data/auth.db                 user accounts and sessions (keep it private)
+data/users/<user id>/books/<book>/
   book.yaml            title, book notes, chapter order
   chapters/*.md        your manuscript
   knowledge.json       knowledge graph
@@ -232,6 +327,8 @@ app/
   knowledge.py    knowledge graph merge and compact context
   providers/      Ollama, Anthropic, Gemini, echo
   storage.py      books, chapters, reviews on disk
+  auth.py         accounts, sessions, CSRF, login rate limiting, security headers
+  users.py        command line for managing accounts
   static/         the web UI (plain HTML, CSS and JavaScript)
 config/           settings, agents, workflows
 ```
