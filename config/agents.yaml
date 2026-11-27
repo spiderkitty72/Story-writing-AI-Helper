@@ -5,6 +5,8 @@
 #   temperature:     creativity, 0 = strict, 1 = creative (optional)
 #   mode:            "edit"   -> the agent returns revised text, shown as a diff to review
 #                    "report" -> the agent returns notes only; the text is not changed
+#                    "write"  -> the agent writes NEW text at the cursor, shown as an
+#                                insertion to review (the text around it is context)
 #   system:          the standing instructions for the agent
 #   task:            what to do with each piece of text. {instructions} is replaced
 #                    with the free-form instructions you type in the app (may be empty).
@@ -14,6 +16,7 @@
 #                    Answers outside the range are retried once, then the original
 #                    text is kept and a warning is shown in the review.
 #   keep_paragraphs: true = the answer must keep the same number of paragraphs.
+#   words:           "write" agents only: about how many words to write.
 #
 # Tips for small local models: keep tasks short and direct, say exactly what to
 # change, and keep chunk_tokens small.
@@ -106,6 +109,48 @@ agents:
       name and line of dialogue, in the same order. Do not contradict the
       background information and do not continue the story past the passage.
       Match the author's tone and style.
+      {instructions}
+
+  shorten:
+    description: Tighten the text, cutting filler words and repetition.
+    mode: edit
+    temperature: 0.4
+    chunk_tokens: 400
+    length_ratio: [0.4, 1.0]
+    system: |
+      You are a fiction editor who tightens prose. You cut filler words,
+      repetition and over-explaining, and keep every plot event, fact, name and
+      the meaning of every line of dialogue.
+    task: |
+      Make the passage shorter and tighter, about two thirds of its length. Cut
+      filler words, repeated ideas and unneeded description. Keep every plot
+      event, fact and name, in the same order. Do not add anything new.
+      {instructions}
+
+  continue:
+    description: Continue the story from the cursor.
+    mode: write
+    temperature: 0.8
+    words: 250
+    system: |
+      You are a skilled fiction co-writer. You continue a book manuscript in the
+      author's own voice, tense and point of view, staying faithful to the
+      established characters, setting, facts and theme.
+    task: |
+      Continue the story from where the text before stops. Move the scene
+      forward with action, dialogue or thought that fits what has happened so far.
+      {instructions}
+
+  write:
+    description: Write new text at the cursor from your instructions.
+    mode: write
+    temperature: 0.8
+    words: 300
+    system: |
+      You are a skilled fiction co-writer. You write new passages for a book
+      manuscript in the author's own voice, tense and point of view, staying
+      faithful to the established characters, setting, facts and theme.
+    task: |
       {instructions}
 
   custom:

@@ -422,7 +422,9 @@ def _clear_cookies(resp: Response) -> None:
 
 
 # ---------------------------------------------------------------- middleware
-PUBLIC_PATHS = {"/login", "/api/auth/login", "/healthz", "/favicon.ico"}
+# The service worker and web app manifest hold no data. Browsers fetch the
+# manifest without cookies, so both must be reachable before login.
+PUBLIC_PATHS = {"/login", "/api/auth/login", "/healthz", "/favicon.ico", "/sw.js", "/manifest.webmanifest"}
 PUBLIC_PREFIXES = ("/static/",)
 ADMIN_PREFIXES = ("/api/admin/", "/api/config/files/")
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}

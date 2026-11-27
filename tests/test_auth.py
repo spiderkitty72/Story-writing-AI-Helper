@@ -15,6 +15,7 @@ def app_dir(tmp_path):
     cfg = load_config()
     cfg.data_dir = tmp_path
     main.state.reload(cfg)
+    auth.configure(lambda: main.state.config.data_dir)  # app.users.main() points it elsewhere
     auth.limiter.reset()
     auth.store().create("admin", PW, is_admin=True)
     auth.store().create("writer", PW)
@@ -198,3 +199,41 @@ def test_cli(app_dir, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "cli-user" in out and "admin  (admin)" in out
     assert login(client(), "cli-user").status_code == 200
+
+
+def test_writing_tools_need_login_csrf_and_stay_per_user(app_dir):
+    anon = client()
+    book = "my-book"
+    for method, path, body in [
+        ("post", f"/api/books/{book}/chat", {"message": "hi"}),
+        ("post", f"/api/books/{book}/search", {"query": "x"}),
+        ("post", f"/api/books/{book}/replace", {"query": "x", "replacement": "y"}),
+        ("get", f"/api/books/{book}/outline", None),
+        ("get", f"/api/books/{book}/timeline", None),
+        ("post", "/api/style", {"text": "x"}),
+        ("post", f"/api/books/{book}/reviews/insert", {"chapter": "a.md", "text": "x"}),
+    ]:
+        r = getattr(anon, method)(path, **({"json": body} if body is not None else {}))
+        assert r.status_code == 401, path
+    # the PWA files are public (browsers fetch the manifest without cookies)
+    assert anon.get("/sw.js").status_code == 200
+    assert anon.get("/manifest.webmanifest").status_code == 200
+
+    a, w = client(), client()
+    login(a), login(w, "writer")
+    book = a.post("/api/books", json={"title": "Secret"}).json()["id"]
+    ch = a.get(f"/api/books/{book}").json()["chapters"][0]["id"]
+    a.put(f"/api/books/{book}/chapters/{ch}", json={"text": "# One\n\nMara hides the key.\n"})
+    assert a.post(f"/api/books/{book}/search", json={"query": "key"}).json()[0]["count"] == 1
+    # the other user can't see or change it
+    assert w.post(f"/api/books/{book}/search", json={"query": "key"}).status_code == 404
+    assert w.get(f"/api/books/{book}/outline").status_code == 404
+    assert w.get(f"/api/books/{book}/chapters/{ch}/snapshots").status_code == 404
+    assert w.put(f"/api/books/{book}/timeline", json={"events": []}).status_code == 404
+    assert w.post(f"/api/books/{book}/replace", json={"query": "key", "replacement": "x"}).status_code == 404
+    # changes need the CSRF token
+    token = a.headers.pop("X-CSRF-Token")
+    assert a.patch(f"/api/books/{book}/outline/{ch}", json={"status": "done"}).status_code == 403
+    assert a.post(f"/api/books/{book}/chapters/{ch}/snapshots", json={}).status_code == 403
+    a.headers["X-CSRF-Token"] = token
+    assert a.patch(f"/api/books/{book}/outline/{ch}", json={"status": "done"}).status_code == 200

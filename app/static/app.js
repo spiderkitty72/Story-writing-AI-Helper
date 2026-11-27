@@ -42,6 +42,7 @@ const S = {
   decisions: {},     // chunkIndex -> {changeId: bool}
   graph: { entities: [], relations: [] },
   editingEntity: null,
+  chat: [],
   watching: new Set(),
 };
 
@@ -52,6 +53,8 @@ function showTab(name) {
   if (name === "review") loadReviews();
   if (name === "knowledge") loadKnowledge();
   if (name === "settings") loadSettings();
+  if (name === "plan") guard(loadPlan)();
+  document.body.classList.remove("menu-open");
 }
 document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
@@ -76,6 +79,11 @@ function updateTaskDesc() {
   const [kind, name] = [v.slice(0, 2), v.slice(3)];
   const item = kind === "wf" ? S.config.workflows.find((w) => w.name === name) : S.config.agents.find((a) => a.name === name);
   $("taskDesc").textContent = item ? item.description : "";
+  const writes = !!item && item.mode === "write";
+  $("scopeLabel").classList.toggle("hidden", writes);
+  $("writeOpts").classList.toggle("hidden", !writes);
+  const agent = kind === "ag" ? item : item && S.config.agents.find((a) => a.name === item.steps[0]);
+  $("wordsInput").placeholder = (agent && agent.words) || 250;
 }
 $("taskSelect").addEventListener("change", updateTaskDesc);
 
@@ -103,6 +111,7 @@ async function openBook(id) {
   const ch = chs.find((c) => c.id === remembered) || chs[0];
   if (ch) await openChapter(ch.id, true); else clearEditor();
   refreshReviewBadge();
+  loadChat();
 }
 async function refreshBook() {
   S.bookData = await api(`/api/books/${encodeURIComponent(S.book)}`);
@@ -127,6 +136,8 @@ function renderChapterList() {
 $("chapterList").addEventListener("click", guard(async (e) => {
   const li = e.target.closest("li");
   if (li && li.dataset.id !== S.chapter) await openChapter(li.dataset.id);
+  document.body.classList.remove("menu-open");
+  showTab("write");
 }));
 // drag to reorder
 let dragId = null;
@@ -163,6 +174,7 @@ async function openChapter(id, skipConfirm = false) {
   $("chapterTitle").textContent = info ? info.title : id;
   renderChapterList();
   updateCounts();
+  updateAiBar();
   if (!$("preview").classList.contains("hidden")) renderPreview();
 }
 async function saveChapter() {
@@ -233,29 +245,144 @@ $("previewToggle").addEventListener("change", (e) => {
 });
 
 // ---------- run AI ----------
-$("runBtn").addEventListener("click", guard(async () => {
+function taskOf(name) {
+  if (name.startsWith("wf:")) return S.config.workflows.find((w) => w.name === name.slice(3));
+  return S.config.agents.find((a) => a.name === name.slice(3));
+}
+// opts: {task: "ag:name"|"wf:name", instructions, scope: "chapter"|"selection", words}
+async function runTask(opts) {
   if (!S.chapter) return toast("Open a chapter first", true);
+  const ed = $("editor");
+  const sel = { start: ed.selectionStart, end: ed.selectionEnd };
   await saveChapter();
-  const v = $("taskSelect").value;
+  const item = taskOf(opts.task);
+  if (!item) return toast("Unknown task", true);
   const body = {
     chapter: S.chapter,
-    instructions: $("instructions").value,
+    instructions: opts.instructions || "",
     provider: $("providerSelect").value || null,
     model: $("modelInput").value.trim() || null,
     use_knowledge: $("useKnowledge").checked,
   };
-  if (v.startsWith("wf:")) body.workflow = v.slice(3); else body.agent = v.slice(3);
+  if (opts.task.startsWith("wf:")) body.workflow = item.name; else body.agent = item.name;
   if ($("chunkInput").value) body.chunk_tokens = +$("chunkInput").value;
   if ($("overlapInput").value !== "") body.overlap_tokens = +$("overlapInput").value;
-  if ($("scopeSelect").value === "selection") {
-    const ed = $("editor");
-    if (ed.selectionStart === ed.selectionEnd) return toast("Select some text in the editor first", true);
-    body.start = ed.selectionStart; body.end = ed.selectionEnd;
+  if (item.mode === "write") {
+    body.start = sel.end; body.end = sel.end; // write at the cursor / after the selection
+    if (opts.words) body.words = opts.words;
+    if (item.name === "write" || (item.steps && item.steps[0] === "write")) {
+      if (!body.instructions.trim()) return toast("Type what you want the AI to write", true);
+    }
+  } else if (opts.scope === "selection") {
+    if (sel.start === sel.end) return toast("Select some text in the editor first", true);
+    body.start = sel.start; body.end = sel.end;
   }
   if (body.agent === "custom" && !body.instructions.trim()) return toast("Type some instructions for the custom task", true);
   const job = await api(`/api/books/${encodeURIComponent(S.book)}/run`, { method: "POST", body });
   $("runStatus").textContent = "Started. Progress is shown in the sidebar.";
   watchJob(job.id, S.book);
+}
+$("runBtn").addEventListener("click", guard(() => runTask({
+  task: $("taskSelect").value,
+  instructions: $("instructions").value,
+  scope: $("scopeSelect").value,
+  words: +$("wordsInput").value || null,
+})));
+
+// Quick AI bar above the editor: acts on the selection, or writes at the cursor.
+function hasSelection() { const ed = $("editor"); return ed.selectionStart !== ed.selectionEnd; }
+function updateAiBar() {
+  const ed = $("editor");
+  const sel = hasSelection();
+  $("aiBarSel").classList.toggle("hidden", !sel);
+  $("aiBarCursor").classList.toggle("hidden", sel);
+  if (sel) {
+    const words = (ed.value.slice(ed.selectionStart, ed.selectionEnd).match(/\S+/g) || []).length;
+    $("aiBarLabel").textContent = `${words} word${words === 1 ? "" : "s"} selected:`;
+    $("aiBarInput").placeholder = "Ask for a change, e.g. make her sound angrier";
+  } else {
+    $("aiBarLabel").textContent = "At the cursor:";
+    $("aiBarInput").placeholder = "Or ask it to write something, e.g. a short fight in the rain";
+  }
+}
+["select", "keyup", "mouseup", "input", "focus"].forEach((ev) => $("editor").addEventListener(ev, updateAiBar));
+$("aiBar").addEventListener("mousedown", (e) => { if (e.target.tagName === "BUTTON") e.preventDefault(); });
+$("aiBar").addEventListener("click", guard(async (e) => {
+  const q = e.target.dataset.quick;
+  if (!q) return;
+  if (!S.config.agents.some((a) => a.name === q)) return toast(`There is no '${q}' agent in agents.yaml`, true);
+  await runTask({ task: "ag:" + q, instructions: $("aiBarInput").value.trim(), scope: "selection" });
+}));
+async function aiBarGo() {
+  const text = $("aiBarInput").value.trim();
+  if (!text) return toast("Type what you want first", true);
+  if (hasSelection()) await runTask({ task: "ag:custom", instructions: text, scope: "selection" });
+  else await runTask({ task: "ag:write", instructions: text });
+  $("aiBarInput").value = "";
+}
+$("aiBarGo").addEventListener("click", guard(aiBarGo));
+$("aiBarInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); guard(aiBarGo)(); } });
+
+// ---------- chat ----------
+document.querySelectorAll(".subtabs button[data-sub]").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".subtabs button[data-sub]").forEach((x) => x.classList.toggle("active", x === b));
+  ["tasks", "chat", "style"].forEach((n) => $("sub-" + n).classList.toggle("hidden", b.dataset.sub !== n));
+}));
+const chatKey = () => "chat:" + S.book;
+function loadChat() {
+  try { S.chat = JSON.parse(localStorage.getItem(chatKey()) || "[]"); } catch { S.chat = []; }
+  renderChat();
+}
+function storeChat() { try { localStorage.setItem(chatKey(), JSON.stringify(S.chat.slice(-40))); } catch { /* private mode */ } }
+function renderChat(pending = false) {
+  $("chatLog").innerHTML = S.chat.map((m, i) => `<div class="msg ${m.role}"><div class="msg-text">${esc(m.content)}</div>` +
+    (m.role === "assistant" ? `<div class="msg-actions"><button class="ghost small" data-insert="${i}" title="Adds this text at the cursor, through Review">Insert at cursor</button></div>` : "") +
+    `</div>`).join("") + (pending ? `<div class="msg assistant muted">Thinking…</div>` : "") ||
+    `<div class="muted small-text">No messages yet.</div>`;
+  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+}
+async function sendChat() {
+  const message = $("chatInput").value.trim();
+  if (!message || $("chatSendBtn").disabled) return;
+  const ed = $("editor");
+  const history = S.chat.slice(-8);
+  S.chat.push({ role: "user", content: message });
+  $("chatInput").value = "";
+  $("chatSendBtn").disabled = true;
+  renderChat(true);
+  try {
+    const r = await api(`/api/books/${encodeURIComponent(S.book)}/chat`, {
+      method: "POST",
+      body: { message, history, chapter: S.chapter, position: S.chapter ? ed.selectionEnd : null,
+        provider: $("providerSelect").value || null, model: $("modelInput").value.trim() || null,
+        use_knowledge: $("useKnowledge").checked },
+    });
+    S.chat.push({ role: "assistant", content: r.reply });
+  } catch (e) {
+    S.chat.pop();
+    $("chatInput").value = message;
+    throw e;
+  } finally {
+    $("chatSendBtn").disabled = false;
+    storeChat();
+    renderChat();
+  }
+}
+$("chatSendBtn").addEventListener("click", guard(sendChat));
+$("chatInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); guard(sendChat)(); } });
+$("chatClearBtn").addEventListener("click", () => { S.chat = []; storeChat(); renderChat(); });
+$("chatLog").addEventListener("click", guard(async (e) => {
+  const i = e.target.dataset.insert;
+  if (i === undefined) return;
+  if (!S.chapter) return toast("Open a chapter first", true);
+  const position = $("editor").selectionEnd;
+  await saveChapter();
+  const r = await api(`/api/books/${encodeURIComponent(S.book)}/reviews/insert`, {
+    method: "POST", body: { chapter: S.chapter, text: S.chat[+i].content, position },
+  });
+  refreshReviewBadge();
+  showTab("review");
+  await openReview(r.review_id);
 }));
 
 async function watchJob(id, book) {
@@ -352,6 +479,11 @@ function renderReview() {
     }).join("");
     const notes = c.notes.length ? `<div class="notes"><strong>Notes</strong><ul>${c.notes.map((n) => `<li><em>${esc(n.agent)}:</em> ${esc(n.text)}</li>`).join("")}</ul></div>` : "";
     const errors = c.errors.length ? `<div class="errors">⚠ ${c.errors.map(esc).join("<br>")}</div>` : "";
+    if (r.kind === "insert") {
+      const pre = r.anchor ? `<span class="ctx">…${esc(r.anchor.slice(-60))}</span>` : "";
+      const post = r.anchor_after ? `<span class="ctx">${esc(r.anchor_after.slice(0, 60))}…</span>` : "";
+      return `<div class="chunk">${errors}${notes}${pre}${body}${post}</div>`;
+    }
     return `<div class="chunk">${errors}${notes}${body}</div>`;
   }).join("");
 }
@@ -404,6 +536,7 @@ async function loadKnowledge() {
   if (!S.book) return;
   S.graph = await api(`/api/books/${encodeURIComponent(S.book)}/knowledge`);
   $("bookNotes").value = S.bookData.notes || "";
+  renderSummaries();
   renderEntityList();
   graphView.setData(S.graph);
 }
@@ -435,6 +568,7 @@ function editEntity(id) {
   $("entAliases").value = (e.aliases || []).join(", ");
   $("entDesc").value = e.description || ""; $("entFacts").value = (e.facts || []).join("\n");
   $("entPinned").checked = !!e.pinned;
+  renderEntityFields(e.type, e.fields || {});
   renderRelations();
   graphView.highlight(id);
 }
@@ -466,6 +600,7 @@ $("saveEntityBtn").addEventListener("click", guard(async () => {
     description: $("entDesc").value.trim(),
     facts: $("entFacts").value.split("\n").map((s) => s.trim()).filter(Boolean),
     pinned: $("entPinned").checked,
+    fields: readEntityFields(),
   });
   await saveGraph(); toast("Saved");
 }));
@@ -481,7 +616,7 @@ $("addEntityBtn").addEventListener("click", guard(async () => {
   const name = prompt("Name of the character, place, object…");
   if (!name) return;
   const id = Math.random().toString(16).slice(2, 10);
-  S.graph.entities.push({ id, name, type: "character", aliases: [], description: "", facts: [], pinned: false });
+  S.graph.entities.push({ id, name, type: "character", aliases: [], description: "", facts: [], pinned: false, fields: {} });
   await saveGraph(); editEntity(id);
 }));
 $("buildKgBtn").addEventListener("click", guard(async () => {
@@ -490,6 +625,19 @@ $("buildKgBtn").addEventListener("click", guard(async () => {
   });
   toast("Extracting knowledge… progress is in the sidebar.");
   watchJob(job.id, S.book);
+}));
+function renderSummaries() {
+  const sums = S.graph.summaries || {};
+  $("summaryList").innerHTML = S.bookData.chapters.map((c) =>
+    `<label>${esc(c.title)}<textarea rows="3" data-sum="${esc(c.id)}" placeholder="Not summarised yet">${esc(sums[c.id] || "")}</textarea></label>`).join("");
+}
+$("saveSummariesBtn").addEventListener("click", guard(async () => {
+  const sums = { ...(S.graph.summaries || {}) };
+  document.querySelectorAll("#summaryList textarea").forEach((t) => { sums[t.dataset.sum] = t.value.trim(); });
+  S.graph.summaries = sums;
+  await saveGraph();
+  renderSummaries();
+  toast("Summaries saved");
 }));
 $("saveNotesBtn").addEventListener("click", guard(async () => {
   await api(`/api/books/${encodeURIComponent(S.book)}`, { method: "PATCH", body: { notes: $("bookNotes").value } });
@@ -595,6 +743,379 @@ const graphView = (() => {
   window.addEventListener("resize", draw);
   return { setData, highlight(id) { selected = id; draw(); } };
 })();
+
+// ---------- shared UI helpers ----------
+const bookUrl = (path = "") => `/api/books/${encodeURIComponent(S.book)}${path}`;
+function openModal(title, html) {
+  $("modalTitle").textContent = title;
+  $("modalBody").innerHTML = html;
+  $("modal").classList.remove("hidden");
+}
+function closeModal() { $("modal").classList.add("hidden"); $("modalBody").innerHTML = ""; }
+$("modalClose").addEventListener("click", closeModal);
+$("modal").addEventListener("click", (e) => { if (e.target === $("modal")) closeModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal(); });
+function selectInEditor(start, end) {
+  showTab("write");
+  const ed = $("editor");
+  ed.focus();
+  ed.setSelectionRange(start, end);
+  // scroll the selection into view: measure with a hidden copy of the text
+  const before = ed.value.slice(0, start);
+  const lines = before.split("\n").length;
+  const lh = parseFloat(getComputedStyle(ed).lineHeight) || 28;
+  ed.scrollTop = Math.max(0, (lines - 3) * lh * (ed.clientWidth < 500 ? 1.6 : 1.1));
+  updateAiBar();
+}
+function segmentsHtml(segments) {
+  return segments.map((s) => s.type === "equal" ? esc(s.text)
+    : `<span class="chg accepted">${s.old ? `<del>${esc(s.old)}</del>` : ""}${s.new ? `<ins>${esc(s.new)}</ins>` : ""}</span>`).join("");
+}
+
+// ---------- mobile menu ----------
+$("menuBtn").addEventListener("click", () => document.body.classList.toggle("menu-open"));
+$("scrim").addEventListener("click", () => document.body.classList.remove("menu-open"));
+
+// ---------- snapshots (history) ----------
+async function showHistory(selectId) {
+  if (!S.chapter) return toast("Open a chapter first", true);
+  if ($("editor").value !== S.savedText) await saveChapter();
+  const url = bookUrl(`/chapters/${encodeURIComponent(S.chapter)}/snapshots`);
+  const list = await api(url);
+  openModal("History: " + $("chapterTitle").textContent, `
+    <div class="row wrap"><input id="snapLabel" placeholder="Name for a new snapshot (optional)">
+      <button id="snapSave" class="small">Save snapshot now</button></div>
+    <div class="history-grid">
+      <ul id="snapList" class="list">${list.map((x) => `<li data-id="${esc(x.id)}"><div>${esc(x.label)}
+        <div class="muted small-text">${esc(x.created)} · ${x.words} words</div></div></li>`).join("") ||
+        `<li class="muted">No snapshots yet. One is saved automatically before AI changes, find &amp; replace and restores.</li>`}</ul>
+      <div id="snapView" class="muted small-text">Pick a snapshot to compare it with the current chapter.</div>
+    </div>`);
+  $("snapSave").onclick = guard(async () => {
+    await api(url, { method: "POST", body: { label: $("snapLabel").value } });
+    toast("Snapshot saved"); await showHistory();
+  });
+  $("snapList").onclick = guard(async (e) => {
+    const li = e.target.closest("li[data-id]");
+    if (!li) return;
+    document.querySelectorAll("#snapList li").forEach((x) => x.classList.toggle("active", x === li));
+    const snap = await api(`${url}/${encodeURIComponent(li.dataset.id)}`);
+    const n = snap.segments.filter((x) => x.type === "change").length;
+    $("snapView").className = "";
+    $("snapView").innerHTML = `<div class="toolbar"><span class="muted small-text">${n ? `${n} differences. <del class="dsample">Red</del> is only in the snapshot, <ins class="dsample">green</ins> was added since.` : "Same as the current chapter."}</span>
+      <span class="spacer"></span><button id="snapRestore" class="small">Restore this version</button></div>
+      <div class="review-body prose-plain snap-diff">${segmentsHtml(snap.segments)}</div>`;
+    $("snapRestore").onclick = guard(async () => {
+      if (!confirm("Replace the chapter with this version? The current text is saved as a snapshot first.")) return;
+      await api(`${url}/${encodeURIComponent(li.dataset.id)}/restore`, { method: "POST" });
+      await openChapter(S.chapter, true);
+      await refreshBook();
+      closeModal(); toast("Restored. The previous text is in History.");
+    });
+  });
+  if (selectId) document.querySelector(`#snapList li[data-id="${selectId}"]`)?.click();
+}
+$("historyBtn").addEventListener("click", guard(() => showHistory()));
+
+// ---------- find and replace ----------
+function findOpts() {
+  return { query: $("findQ").value, case: $("findCase").checked, whole_word: $("findWord").checked, regex: $("findRe").checked };
+}
+function showFind(initial = "") {
+  openModal("Find and replace in the whole book", `
+    <div class="row wrap"><input id="findQ" placeholder="Find…"><button id="findGo" class="small">Find</button></div>
+    <div class="row wrap find-opts">
+      <label class="toggle"><input type="checkbox" id="findCase"> Match case</label>
+      <label class="toggle"><input type="checkbox" id="findWord" checked> Whole words</label>
+      <label class="toggle"><input type="checkbox" id="findRe"> Regular expression</label></div>
+    <div class="row wrap"><input id="findR" placeholder="Replace with…"><button id="replaceGo" class="ghost small">Replace all</button></div>
+    <div id="findOut" class="find-out"></div>`);
+  $("findQ").value = initial;
+  const run = guard(async () => {
+    const res = await api(bookUrl("/search"), { method: "POST", body: findOpts() });
+    const total = res.reduce((n, c) => n + c.count, 0);
+    $("findOut").innerHTML = `<p class="muted small-text">${total} matches in ${res.length} chapters</p>` + res.map((c) =>
+      `<h4>${esc(c.title)} <span class="muted small-text">(${c.count})</span></h4><ul class="list hits">${c.hits.map((h) =>
+        `<li data-ch="${esc(c.chapter)}" data-s="${h.start}" data-e="${h.end}"><span>…${esc(h.before)}<mark>${esc(h.match)}</mark>${esc(h.after)}…</span></li>`).join("")}</ul>`).join("");
+  });
+  $("findGo").onclick = run;
+  $("findQ").onkeydown = (e) => { if (e.key === "Enter") run(); };
+  $("replaceGo").onclick = guard(async () => {
+    const o = findOpts();
+    if (!o.query) return toast("Type something to find", true);
+    if (!confirm(`Replace every "${o.query}" with "${$("findR").value}" in the whole book? A snapshot of each changed chapter is saved first.`)) return;
+    if (S.chapter && $("editor").value !== S.savedText) await saveChapter();
+    const r = await api(bookUrl("/replace"), { method: "POST", body: { ...o, replacement: $("findR").value } });
+    toast(`Replaced ${r.replaced} in ${Object.keys(r.chapters).length} chapters. Undo from History if needed.`);
+    if (S.chapter) await openChapter(S.chapter, true);
+    await refreshBook();
+    run();
+  });
+  $("findOut").onclick = guard(async (e) => {
+    const li = e.target.closest("li[data-ch]");
+    if (!li) return;
+    if (li.dataset.ch !== S.chapter) await openChapter(li.dataset.ch);
+    closeModal();
+    selectInEditor(+li.dataset.s, +li.dataset.e);
+  });
+  if (initial) run();
+  setTimeout(() => $("findQ")?.focus(), 50);
+}
+$("findBtn").addEventListener("click", () => {
+  const ed = $("editor");
+  showFind(ed.value.slice(ed.selectionStart, ed.selectionEnd).slice(0, 80));
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "f") { e.preventDefault(); $("findBtn").click(); }
+});
+
+// ---------- style check ----------
+const STYLE_LABELS = {
+  long_sentence: "Long sentences", adverb: "Adverbs", passive: "Passive voice", filter: "Filter words",
+  weak: "Weak words", echo: "Echoes (same word close together)", repeated_phrase: "Repeated phrases",
+};
+$("styleBtn").addEventListener("click", guard(async () => {
+  const ed = $("editor");
+  const sel = ed.selectionStart !== ed.selectionEnd;
+  const base = sel ? ed.selectionStart : 0;
+  const text = sel ? ed.value.slice(ed.selectionStart, ed.selectionEnd) : ed.value;
+  if (!text.trim()) return toast("There is no text to check", true);
+  const r = await api("/api/style", { method: "POST", body: { text } });
+  const st = r.stats;
+  const ease = st.reading_ease >= 70 ? "easy" : st.reading_ease >= 50 ? "fairly easy" : st.reading_ease >= 30 ? "hard" : "very hard";
+  const groups = Object.keys(STYLE_LABELS).filter((t) => r.counts[t]).map((t) => {
+    const items = r.issues.filter((i) => i.type === t);
+    return `<details><summary>${esc(STYLE_LABELS[t])} <span class="badge soft">${items.length}</span></summary><ul class="list hits">${
+      items.slice(0, 200).map((i) => `<li data-s="${i.start + base}" data-e="${i.end + base}" title="${esc(i.message)}"><span><mark>${esc(i.text.slice(0, 80))}</mark> <span class="muted small-text">${esc(i.message)}</span></span></li>`).join("")}</ul></details>`;
+  }).join("");
+  $("styleOut").innerHTML = `
+    <div class="stats"><div><strong>${st.words}</strong><span>words</span></div><div><strong>${st.avg_sentence_words}</strong><span>words per sentence</span></div>
+      <div><strong>${Math.round(st.reading_ease)}</strong><span>reading ease (${ease})</span></div><div><strong>${st.dialogue_percent}%</strong><span>dialogue</span></div></div>
+    ${groups || `<p class="muted">No issues found.</p>`}
+    ${r.overused.length ? `<details><summary>Most used words</summary><p class="small-text">${r.overused.map((w) => `${esc(w.word)} <span class="muted">${w.count}</span>`).join(" · ")}</p></details>` : ""}`;
+}));
+$("styleOut").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-s]");
+  if (li) selectInEditor(+li.dataset.s, +li.dataset.e);
+});
+
+// ---------- brainstorm ----------
+const BRAINSTORM = {
+  next: () => "Give me 5 different ideas for what could happen next in the story, from where my cursor is. One or two sentences each, as a numbered list.",
+  twists: () => "Suggest 5 plot twists that would fit this story and surprise the reader without breaking any established facts. Numbered list, one or two sentences each.",
+  whatif: () => "Ask me 7 'What if…' questions that could take the story in interesting directions. Numbered list.",
+  names: () => { const k = prompt("Names for what? (e.g. a tavern, a northern village, a villain)"); return k && `Suggest 10 names for ${k} that fit the world and tone of this story, each with a few words on why it fits. Numbered list.`; },
+  describe: () => { const k = prompt("Describe what? (e.g. the market at dawn)"); return k && `Describe ${k} using all five senses, in the style of this story. Give a short bullet list of vivid details I can use.`; },
+};
+document.querySelector(".brainstorm").addEventListener("click", guard(async (e) => {
+  const fn = BRAINSTORM[e.target.dataset.brainstorm];
+  if (!fn) return;
+  const text = fn();
+  if (!text) return;
+  $("chatInput").value = text;
+  await sendChat();
+}));
+
+// ---------- entity templates & rename everywhere ----------
+function renderEntityFields(type, values) {
+  const fields = (S.config.entity_fields || {})[type] || [];
+  $("entTemplate").classList.toggle("hidden", !fields.length);
+  $("entFields").innerHTML = fields.map(([k, label]) =>
+    `<label>${esc(label)} <textarea rows="1" data-field="${esc(k)}">${esc(values[k] || "")}</textarea></label>`).join("");
+}
+function readEntityFields() {
+  const out = {};
+  document.querySelectorAll("#entFields [data-field]").forEach((t) => { if (t.value.trim()) out[t.dataset.field] = t.value.trim(); });
+  return out;
+}
+$("entType").addEventListener("change", () => renderEntityFields($("entType").value, readEntityFields()));
+$("renameEverywhereBtn").addEventListener("click", guard(async () => {
+  const e = S.graph.entities.find((x) => x.id === S.editingEntity);
+  if (!e) return;
+  const name = prompt(`Rename "${e.name}" in the knowledge map and in every chapter to:`, e.name);
+  if (!name || name.trim() === e.name) return;
+  if (S.chapter && $("editor").value !== S.savedText) await saveChapter();
+  const r = await api(bookUrl("/replace"), { method: "POST",
+    body: { query: e.name, replacement: name.trim(), case: true, whole_word: true, regex: false } });
+  for (const x of S.graph.entities) {
+    x.facts = (x.facts || []).map((f) => f.split(e.name).join(name.trim()));
+    if (x.description) x.description = x.description.split(e.name).join(name.trim());
+  }
+  for (const k in S.graph.summaries || {}) S.graph.summaries[k] = S.graph.summaries[k].split(e.name).join(name.trim());
+  e.name = name.trim(); $("entName").value = e.name;
+  await saveGraph();
+  if (S.chapter) await openChapter(S.chapter, true);
+  await refreshBook();
+  toast(`Renamed. ${r.replaced} replacements in ${Object.keys(r.chapters).length} chapters (snapshots saved in History).`);
+}));
+
+// ---------- plan: outline / corkboard ----------
+let planView = "outline";
+document.querySelectorAll(".plan-tabs button").forEach((b) => b.addEventListener("click", guard(async () => {
+  planView = b.dataset.plan;
+  document.querySelectorAll(".plan-tabs button").forEach((x) => x.classList.toggle("active", x === b));
+  $("plan-outline").classList.toggle("hidden", planView !== "outline");
+  $("plan-timeline").classList.toggle("hidden", planView !== "timeline");
+  await loadPlan();
+})));
+async function loadPlan() {
+  if (!S.book) return;
+  if (planView === "outline") return loadOutline();
+  return loadTimeline();
+}
+async function loadOutline() {
+  const o = await api(bookUrl("/outline"));
+  S.outline = o;
+  $("planHint").textContent = "Drag cards (or use ◀ ▶) to reorder chapters. Synopses help the AI when a chapter has no summary yet.";
+  $("corkboard").innerHTML = o.chapters.map((c, i) => `
+    <div class="card status-${esc(c.status)}" draggable="true" data-id="${esc(c.id)}">
+      <div class="card-head"><strong>${i + 1}. ${esc(c.title)}</strong><span class="muted small-text">${c.words}w</span></div>
+      <textarea class="synopsis" rows="4" placeholder="Synopsis: what happens in this chapter?">${esc(c.synopsis)}</textarea>
+      ${c.summary && !c.synopsis ? `<button class="ghost small" data-use-summary="${esc(c.id)}" title="${esc(c.summary)}">Use AI summary</button>` : ""}
+      <div class="card-foot">
+        <select class="status">${o.statuses.map((s) => `<option ${s === c.status ? "selected" : ""}>${s}</option>`).join("")}</select>
+        <span class="spacer"></span>
+        <button class="ghost small" data-move="-1" title="Move left">◀</button>
+        <button class="ghost small" data-move="1" title="Move right">▶</button>
+        <button class="ghost small" data-open="${esc(c.id)}">Open</button>
+      </div>
+    </div>`).join("");
+}
+async function patchOutline(id, body) {
+  await api(bookUrl(`/outline/${encodeURIComponent(id)}`), { method: "PATCH", body });
+}
+$("corkboard").addEventListener("change", guard(async (e) => {
+  const card = e.target.closest(".card");
+  if (!card) return;
+  if (e.target.classList.contains("synopsis")) await patchOutline(card.dataset.id, { synopsis: e.target.value });
+  if (e.target.classList.contains("status")) {
+    await patchOutline(card.dataset.id, { status: e.target.value });
+    card.className = "card status-" + e.target.value;
+  }
+}));
+async function moveChapter(id, target, after) {
+  const order = S.bookData.chapters.map((c) => c.id).filter((x) => x !== id);
+  let i = order.indexOf(target);
+  if (after) i += 1;
+  order.splice(i, 0, id);
+  await api(bookUrl("/order"), { method: "PUT", body: { order } });
+  await refreshBook();
+  await loadOutline();
+}
+$("corkboard").addEventListener("click", guard(async (e) => {
+  const card = e.target.closest(".card");
+  if (!card) return;
+  if (e.target.dataset.open) { await openChapter(e.target.dataset.open); showTab("write"); }
+  if (e.target.dataset.useSummary) {
+    const c = S.outline.chapters.find((x) => x.id === card.dataset.id);
+    await patchOutline(c.id, { synopsis: c.summary }); await loadOutline();
+  }
+  if (e.target.dataset.move) {
+    const ids = S.bookData.chapters.map((c) => c.id);
+    const i = ids.indexOf(card.dataset.id), j = i + +e.target.dataset.move;
+    if (j < 0 || j >= ids.length) return;
+    await moveChapter(card.dataset.id, ids[j], +e.target.dataset.move > 0);
+  }
+}));
+let cardDrag = null;
+$("corkboard").addEventListener("dragstart", (e) => { cardDrag = e.target.closest(".card")?.dataset.id; });
+$("corkboard").addEventListener("dragover", (e) => e.preventDefault());
+$("corkboard").addEventListener("drop", guard(async (e) => {
+  e.preventDefault();
+  const target = e.target.closest(".card")?.dataset.id;
+  if (!cardDrag || !target || target === cardDrag) return;
+  const ids = S.bookData.chapters.map((c) => c.id);
+  await moveChapter(cardDrag, target, ids.indexOf(cardDrag) < ids.indexOf(target));
+}));
+
+// ---------- plan: timeline / plot threads ----------
+async function loadTimeline() {
+  S.timeline = await api(bookUrl("/timeline"));
+  if (!S.graph.entities.length) S.graph = await api(bookUrl("/knowledge"));
+  $("planHint").textContent = "";
+  renderTimeline();
+}
+async function saveTimeline() {
+  S.timeline = await api(bookUrl("/timeline"), { method: "PUT", body: S.timeline });
+  renderTimeline();
+}
+function renderTimeline() {
+  const t = S.timeline, chs = S.bookData.chapters;
+  const cols = [...chs.map((c) => ({ id: c.id, title: c.title })), { id: "", title: "Not placed" }];
+  const head = `<div class="tl-cell tl-corner"></div>` + cols.map((c, i) =>
+    `<div class="tl-cell tl-col">${c.id ? `${i + 1}. ` : ""}${esc(c.title)}</div>`).join("");
+  const rows = t.threads.map((th) => {
+    const cells = cols.map((c) => {
+      const evs = t.events.filter((e) => e.thread === th.id && (e.chapter || "") === c.id).sort((a, b) => a.order - b.order);
+      return `<div class="tl-cell">${evs.map((e) => `<div class="tl-event" data-ev="${esc(e.id)}" style="border-color:${esc(th.color)}">
+        <strong>${esc(e.title)}</strong>${e.when ? `<div class="muted small-text">${esc(e.when)}</div>` : ""}</div>`).join("")}
+        <button class="ghost small tl-add" data-add="${esc(th.id)}|${esc(c.id)}" title="Add event">+</button></div>`;
+    }).join("");
+    return `<div class="tl-cell tl-row" data-thread="${esc(th.id)}"><span class="dot" style="background:${esc(th.color)}"></span>${esc(th.name)}</div>${cells}`;
+  }).join("");
+  $("timelineGrid").innerHTML = `<div class="timeline" style="grid-template-columns: 150px repeat(${cols.length}, minmax(150px, 1fr))">${head}${rows}</div>`;
+}
+$("addThreadBtn").addEventListener("click", guard(async () => {
+  const name = prompt("Name of the plot thread (e.g. Romance, The heist, Mara's secret):");
+  if (!name) return;
+  S.timeline.threads.push({ id: Math.random().toString(16).slice(2, 10), name });
+  await saveTimeline();
+}));
+function editEvent(ev) {
+  const t = S.timeline;
+  const chs = S.bookData.chapters;
+  openModal(ev.id ? "Edit event" : "New event", `
+    <label>Title <input id="evTitle" value="${esc(ev.title || "")}" placeholder="e.g. Mara steals the key"></label>
+    <label>When (story time, optional) <input id="evWhen" value="${esc(ev.when || "")}" placeholder="e.g. Day 3, night"></label>
+    <label>Notes <textarea id="evNotes" rows="3">${esc(ev.notes || "")}</textarea></label>
+    <div class="row wrap">
+      <label>Plot thread <select id="evThread">${t.threads.map((th) => `<option value="${esc(th.id)}" ${th.id === ev.thread ? "selected" : ""}>${esc(th.name)}</option>`).join("")}</select></label>
+      <label>Chapter <select id="evChapter"><option value="">Not placed</option>${chs.map((c) => `<option value="${esc(c.id)}" ${c.id === ev.chapter ? "selected" : ""}>${esc(c.title)}</option>`).join("")}</select></label>
+    </div>
+    ${S.graph.entities.length ? `<details><summary>Who and what is involved</summary><div class="ent-checks">${S.graph.entities.map((e) =>
+      `<label class="toggle"><input type="checkbox" value="${esc(e.id)}" ${(ev.entities || []).includes(e.id) ? "checked" : ""}> ${esc(e.name)}</label>`).join("")}</div></details>` : ""}
+    <div class="row end">${ev.id ? `<button id="evDelete" class="ghost small danger">Delete</button>` : ""}<button id="evSave" class="primary small">Save</button></div>`);
+  $("evSave").onclick = guard(async () => {
+    const data = { title: $("evTitle").value.trim(), when: $("evWhen").value.trim(), notes: $("evNotes").value.trim(),
+      thread: $("evThread").value, chapter: $("evChapter").value,
+      entities: [...document.querySelectorAll(".ent-checks input:checked")].map((x) => x.value) };
+    if (!data.title) return toast("Give the event a title", true);
+    if (ev.id) Object.assign(t.events.find((x) => x.id === ev.id), data);
+    else t.events.push({ ...data, id: Math.random().toString(16).slice(2, 10), order: Date.now() / 1e12 });
+    closeModal();
+    await saveTimeline();
+  });
+  if (ev.id) $("evDelete").onclick = guard(async () => {
+    t.events = t.events.filter((x) => x.id !== ev.id);
+    closeModal();
+    await saveTimeline();
+  });
+  setTimeout(() => $("evTitle")?.focus(), 50);
+}
+$("timelineGrid").addEventListener("click", guard(async (e) => {
+  const add = e.target.dataset.add;
+  if (add) { const [thread, chapter] = add.split("|"); return editEvent({ thread, chapter }); }
+  const evEl = e.target.closest("[data-ev]");
+  if (evEl) return editEvent(S.timeline.events.find((x) => x.id === evEl.dataset.ev));
+  const row = e.target.closest("[data-thread]");
+  if (row) {
+    const th = S.timeline.threads.find((x) => x.id === row.dataset.thread);
+    const name = prompt("Rename the plot thread (leave empty to delete it and its events):", th.name);
+    if (name === null) return;
+    if (!name.trim()) {
+      if (S.timeline.threads.length === 1) return toast("Keep at least one plot thread", true);
+      if (!confirm(`Delete "${th.name}" and its events?`)) return;
+      S.timeline.threads = S.timeline.threads.filter((x) => x.id !== th.id);
+      S.timeline.events = S.timeline.events.filter((x) => x.thread !== th.id);
+    } else th.name = name.trim();
+    await saveTimeline();
+  }
+}));
+
+// ---------- installable app ----------
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
 
 // ---------- settings ----------
 async function loadSettings() {

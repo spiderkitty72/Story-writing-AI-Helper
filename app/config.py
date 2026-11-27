@@ -30,6 +30,10 @@ class ChunkSettings:
     chunk_tokens: int = 1200
     overlap_tokens: int = 300
     knowledge_tokens: int = 600
+    # Text before the cursor sent when the AI writes new text or chats.
+    write_context_tokens: int = 800
+    # Budget for the "story so far" chapter summaries sent with each request.
+    summary_tokens: int = 400
     chars_per_token: int = 4
 
 
@@ -37,7 +41,7 @@ class ChunkSettings:
 class Agent:
     name: str
     description: str = ""
-    mode: str = "edit"  # edit | report
+    mode: str = "edit"  # edit | report | write
     provider: str | None = None
     model: str | None = None
     temperature: float | None = None
@@ -51,6 +55,8 @@ class Agent:
     length_ratio: list[float] | None = None
     # Require the answer to have the same number of paragraphs (proofreading).
     keep_paragraphs: bool = False
+    # "write" agents: about how many words of new text to write.
+    words: int | None = None
 
 
 @dataclass
@@ -118,8 +124,8 @@ def parse_config(settings: dict, agents: dict, workflows: dict, base_dir: Path |
         if unknown:
             raise ConfigError(f"agent '{name}' has unknown keys: {', '.join(sorted(unknown))}")
         agent = Agent(name=name, **a)
-        if agent.mode not in ("edit", "report"):
-            raise ConfigError(f"agent '{name}' mode must be 'edit' or 'report'")
+        if agent.mode not in ("edit", "report", "write"):
+            raise ConfigError(f"agent '{name}' mode must be 'edit', 'report' or 'write'")
         if agent.length_ratio is not None and (
             not isinstance(agent.length_ratio, list) or len(agent.length_ratio) != 2
             or not all(isinstance(x, (int, float)) for x in agent.length_ratio)
@@ -141,6 +147,8 @@ def parse_config(settings: dict, agents: dict, workflows: dict, base_dir: Path |
             steps.append(step)
         if not steps:
             raise ConfigError(f"workflow '{name}' has no steps")
+        if any(agent_map[st.agent].mode == "write" for st in steps[1:]):
+            raise ConfigError(f"workflow '{name}': a 'write' agent can only be the first step")
         wf_map[name] = Workflow(name=name, description=(w or {}).get("description", ""), steps=steps)
 
     default_provider = settings.get("default_provider") or next(iter(providers), "echo")

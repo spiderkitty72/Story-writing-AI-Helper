@@ -32,6 +32,7 @@ def client(tmp_path, monkeypatch):
         a.provider = None
     cfg.data_dir = tmp_path
     main.state.reload(cfg)
+    auth.configure(lambda: main.state.config.data_dir)
     auth.store().create("tester", "correct horse battery", is_admin=True)
     with TestClient(main.app) as c:
         login(c, "tester", "correct horse battery")
@@ -199,3 +200,157 @@ def test_ollama_context_grows_to_fit_prompt():
     asyncio.run(p.complete("sys", "x" * 30000))
     assert seen["options"]["num_ctx"] >= 10000 + 1000
     assert p.truncated is True
+
+
+class WriterProvider(Provider):
+    """Writes new text, chats, and returns knowledge with a summary."""
+
+    type_name = "writer"
+    prompts: list[tuple[str, str]] = []
+
+    async def complete(self, system, prompt, *, model=None, temperature=None):
+        WriterProvider.prompts.append((system, prompt))
+        if "Write only the NEW text" in prompt:
+            return "Here is the new text:\n\nMara pushed open the gate and stepped into the rain."
+        if "THE AUTHOR NOW SAYS:" in prompt:
+            return "<think>hmm</think>Mara has a limp."
+        target = extract_target(prompt)
+        if target is None:
+            return ('{"summary": "Mara reaches the market.", "entities": [{"name": "Mara", "type": "character",'
+                    ' "facts": ["walks with a limp"]}], "relations": []}')
+        return target
+
+
+def _use_writer(client):
+    PROVIDER_TYPES["writer"] = WriterProvider
+    WriterProvider.prompts = []
+    main.state.config.providers = {"writer": {"type": "writer"}}
+    main.state.config.default_provider = "writer"
+
+
+def test_write_at_cursor_creates_insert_review(client):
+    _use_writer(client)
+    text = "# One\n\nMara walked to the gate.\n\nThe end.\n"
+    book, ch = _chapter(client, text)
+    pos = text.index("\n\nThe end.")
+    job = wait(client, client.post(f"/api/books/{book}/run", json={
+        "chapter": ch, "agent": "continue", "start": pos, "end": pos, "words": 120}).json()["id"])
+    assert job["status"] == "done", job
+    system, prompt = WriterProvider.prompts[-1]
+    assert "about 120 words" in prompt
+    assert "Mara walked to the gate." in system and "The end." in system  # before and after context
+    review = client.get(f"/api/books/{book}/reviews/{job['result']['review_id']}").json()
+    assert review["changes"] == 1 and review["kind"] == "insert"
+    # the chapter is edited elsewhere before applying: the insertion still lands in the right place
+    client.put(f"/api/books/{book}/chapters/{ch}", json={"text": "Prologue.\n\n" + text})
+    client.post(f"/api/books/{book}/reviews/{review['id']}/apply", json={"accept_all": True})
+    out = client.get(f"/api/books/{book}/chapters/{ch}").json()["text"]
+    assert out == ("Prologue.\n\n# One\n\nMara walked to the gate.\n\n"
+                   "Mara pushed open the gate and stepped into the rain.\n\nThe end.\n")
+
+
+def test_write_needs_instructions(client):
+    _use_writer(client)
+    book, ch = _chapter(client, "Text.\n")
+    job = wait(client, client.post(f"/api/books/{book}/run", json={"chapter": ch, "agent": "write"}).json()["id"])
+    assert job["status"] == "error" and "write" in job["error"]
+
+
+def test_write_workflow_proofreads_new_text(client):
+    _use_writer(client)
+    book, ch = _chapter(client, "Mara walked.\n")
+    job = wait(client, client.post(f"/api/books/{book}/run", json={
+        "chapter": ch, "workflow": "write_and_proofread", "instructions": "she opens the gate"}).json()["id"])
+    assert job["status"] == "done", job
+    assert job["progress"] == 2
+    assert "Mara pushed open the gate" in WriterProvider.prompts[-1][1]  # grammar saw the new text
+
+
+def test_knowledge_summaries_feed_later_chapters_and_chat(client):
+    _use_writer(client)
+    book, ch1 = _chapter(client, "# One\n\nMara limps to the market.\n")
+    ch2 = client.post(f"/api/books/{book}/chapters", json={"title": "Two", "text": "# Two\n\nShe waits.\n"}).json()["id"]
+    job = wait(client, client.post(f"/api/books/{book}/knowledge/build", json={"chapter": ch1}).json()["id"])
+    assert job["status"] == "done"
+    graph = client.get(f"/api/books/{book}/knowledge").json()
+    assert graph["summaries"][ch1] == "Mara reaches the market."
+    # saving entities from the UI keeps the summaries
+    client.put(f"/api/books/{book}/knowledge", json={"entities": graph["entities"], "relations": []})
+    assert client.get(f"/api/books/{book}/knowledge").json()["summaries"][ch1]
+    # an edit in chapter two gets chapter one's summary and Mara's facts
+    wait(client, client.post(f"/api/books/{book}/run", json={"chapter": ch2, "agent": "spelling"}).json()["id"])
+    system = WriterProvider.prompts[-1][0]
+    assert "The story so far" in system and "Mara reaches the market." in system
+    # chat about the story
+    r = client.post(f"/api/books/{book}/chat", json={
+        "message": "What is wrong with Mara's leg?", "chapter": ch2, "position": 5,
+        "history": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hello!"}]}).json()
+    assert r["reply"] == "Mara has a limp."
+    system, prompt = WriterProvider.prompts[-1]
+    assert "walks with a limp" in system and "Author: hi" in prompt
+    # insert a chat answer at the cursor through review
+    rid = client.post(f"/api/books/{book}/reviews/insert",
+                      json={"chapter": ch2, "text": "She is tired.", "position": 7}).json()["review_id"]
+    client.post(f"/api/books/{book}/reviews/{rid}/apply", json={"accept_all": True})
+    assert client.get(f"/api/books/{book}/chapters/{ch2}").json()["text"] == "# Two\n\nShe is tired.\n\nShe waits.\n"
+
+
+def test_outline_snapshots_and_replace(client):
+    book, ch = _chapter(client, "# One\n\nMara met Tom. Tomorrow Mara leaves.\n")
+    assert client.patch(f"/api/books/{book}/outline/{ch}", json={"synopsis": "Mara meets Tom.", "status": "revised"}).status_code == 200
+    assert client.patch(f"/api/books/{book}/outline/{ch}", json={"status": "bogus"}).status_code == 400
+    o = client.get(f"/api/books/{book}/outline").json()
+    assert o["chapters"][0]["synopsis"] == "Mara meets Tom." and o["chapters"][0]["status"] == "revised"
+
+    hits = client.post(f"/api/books/{book}/search", json={"query": "tom", "whole_word": True}).json()
+    assert hits[0]["count"] == 1  # not "Tomorrow"
+    r = client.post(f"/api/books/{book}/replace", json={"query": "Mara", "replacement": "Mira", "case": True,
+                                                         "whole_word": True}).json()
+    assert r["replaced"] == 2
+    assert client.get(f"/api/books/{book}/chapters/{ch}").json()["text"] == "# One\n\nMira met Tom. Tomorrow Mira leaves.\n"
+
+    snaps = client.get(f"/api/books/{book}/chapters/{ch}/snapshots").json()
+    assert len(snaps) == 1 and "replacing" in snaps[0]["label"]
+    snap = client.get(f"/api/books/{book}/chapters/{ch}/snapshots/{snaps[0]['id']}").json()
+    assert "Mara met Tom" in snap["text"] and any(s["type"] == "change" for s in snap["segments"])
+    client.post(f"/api/books/{book}/chapters/{ch}/snapshots/{snaps[0]['id']}/restore")
+    assert "Mara met Tom" in client.get(f"/api/books/{book}/chapters/{ch}").json()["text"]
+    assert len(client.get(f"/api/books/{book}/chapters/{ch}/snapshots").json()) == 2  # restore backs up first
+    assert client.get(f"/api/books/{book}/chapters/{ch}/snapshots/..%2Fx").status_code in (400, 404)
+
+
+def test_timeline_and_templates_reach_the_prompt(client):
+    _use_writer(client)
+    book, ch = _chapter(client, "# One\n\nMara waits.\n")
+    t = client.put(f"/api/books/{book}/timeline", json={
+        "threads": [{"id": "a", "name": "Escape"}],
+        "events": [{"title": "Mara steals the key", "chapter": ch, "thread": "a", "notes": "at night"},
+                   {"title": ""}]}).json()
+    assert len(t["events"]) == 1 and t["threads"][0]["color"]
+    client.put(f"/api/books/{book}/knowledge", json={"entities": [
+        {"name": "Mara", "type": "character", "fields": {"goal": "find her brother", "fear": ""}}]})
+    wait(client, client.post(f"/api/books/{book}/run", json={"chapter": ch, "agent": "continue"}).json()["id"])
+    system = WriterProvider.prompts[-1][0]
+    assert "[Escape] Mara steals the key: at night" in system
+    assert "Goal (what they want): find her brother" in system and "Fear" not in system
+    assert client.get("/api/config").json()["entity_fields"]["character"]
+
+
+def test_style_check():
+    from app.style import analyze
+
+    text = ("# Title\n\nShe walked slowly to the door. The door was opened by the guard. "
+            "She felt very cold. " + "It was a long day and " * 10 + "then she slept.")
+    r = analyze(text)
+    types = {i["type"] for i in r["issues"]}
+    assert {"adverb", "passive", "filter", "weak", "long_sentence", "repeated_phrase", "echo"} <= types
+    assert all(text[i["start"]:i["end"]] == i["text"] for i in r["issues"])
+    assert not any(i["start"] < 9 for i in r["issues"])  # the heading is ignored
+    assert r["stats"]["words"] > 20
+
+
+def test_pwa_files(client):
+    sw = client.get("/sw.js")
+    assert sw.status_code == 200 and "/api/" in sw.text
+    m = client.get("/manifest.webmanifest").json()
+    assert m["display"] == "standalone" and m["icons"]

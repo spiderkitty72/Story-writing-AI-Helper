@@ -25,6 +25,9 @@ class Provider:
         # Set by complete(): True when the model stopped because it hit its
         # output limit, meaning the answer is cut off.
         self.truncated = False
+        # Set by the caller before complete() when the answer must be JSON.
+        # Providers that support a JSON output mode use it.
+        self.json_mode = False
 
     async def complete(self, system: str, prompt: str, *, model: str | None = None,
                        temperature: float | None = None) -> str:
@@ -44,8 +47,12 @@ class EchoProvider(Provider):
     type_name = "echo"
 
     async def complete(self, system, prompt, *, model=None, temperature=None):
-        from app.prompts import REPORT_RULES, extract_target
+        from app.prompts import REPORT_RULES, WRITE_MARK, extract_target
 
+        if WRITE_MARK in prompt:
+            return "(The echo provider does not write. With a real model, new text appears here.)"
+        if "THE AUTHOR NOW SAYS:" in prompt:
+            return "(The echo provider cannot chat. Choose a real model in the AI panel.)"
         target = extract_target(prompt)
         if target is None:
             return '{"entities": [], "relations": []}'
@@ -82,6 +89,8 @@ class OllamaProvider(Provider):
             ],
             "options": {"num_ctx": num_ctx, "num_predict": num_predict},
         }
+        if self.json_mode:
+            body["format"] = "json"
         if temperature is not None:
             body["options"]["temperature"] = temperature
         async with self._client() as c:

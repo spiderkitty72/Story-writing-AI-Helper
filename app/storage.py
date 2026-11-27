@@ -166,8 +166,10 @@ class Storage:
     def read_knowledge(self, book: str) -> dict[str, Any]:
         p = self._book_dir(book) / "knowledge.json"
         if not p.exists():
-            return {"entities": [], "relations": []}
-        return json.loads(p.read_text(encoding="utf-8"))
+            return {"entities": [], "relations": [], "summaries": {}}
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data.setdefault("summaries", {})
+        return data
 
     def write_knowledge(self, book: str, data: dict[str, Any]) -> None:
         _atomic_write(self._book_dir(book) / "knowledge.json", json.dumps(data, indent=2, ensure_ascii=False))

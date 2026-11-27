@@ -15,6 +15,22 @@ from typing import Any
 
 ENTITY_TYPES = ["character", "place", "object", "event", "group", "concept"]
 
+# Fill-in sheets per entity type (like a codex template). Filled fields are
+# sent to the AI with the entity, so keep the answers short.
+ENTITY_FIELDS: dict[str, list[list[str]]] = {
+    "character": [["role", "Role in the story"], ["age", "Age"], ["appearance", "Appearance"],
+                  ["personality", "Personality"], ["voice", "How they talk"], ["goal", "Goal (what they want)"],
+                  ["fear", "Fear or flaw"], ["secret", "Secret"], ["backstory", "Backstory"],
+                  ["arc", "How they change"]],
+    "place": [["looks", "What it looks like"], ["senses", "Sounds, smells, feel"],
+              ["people", "Who is found there"], ["history", "History"], ["mood", "Mood"]],
+    "object": [["looks", "What it looks like"], ["owner", "Owner"], ["power", "What it does"],
+               ["origin", "Where it came from"]],
+    "event": [["when", "When"], ["where", "Where"], ["who", "Who was involved"], ["result", "What it changed"]],
+    "group": [["purpose", "Purpose"], ["leader", "Leader"], ["members", "Members"], ["symbols", "Symbols, dress"]],
+    "concept": [["rules", "Rules"], ["limits", "Limits and costs"], ["who_knows", "Who knows about it"]],
+}
+
 EXTRACT_SYSTEM = (
     "You extract a knowledge graph from book manuscripts. You answer with JSON only."
 )
@@ -27,7 +43,8 @@ facts). Only record what the text states or clearly implies.
 Already known entities (reuse these exact names when they appear): {known}
 
 Answer with JSON in exactly this shape and nothing else:
-{{"entities": [{{"name": "...", "type": "character|place|object|event|group|concept",
+{{"summary": "two sentences saying what happens in this passage",
+ "entities": [{{"name": "...", "type": "character|place|object|event|group|concept",
   "aliases": ["..."], "description": "one sentence", "facts": ["short fact", "..."]}}],
  "relations": [{{"source": "name", "target": "name", "label": "e.g. sister of"}}]}}"""
 
@@ -37,7 +54,41 @@ def _norm(s: str) -> str:
 
 
 def empty_graph() -> dict[str, Any]:
-    return {"entities": [], "relations": []}
+    return {"entities": [], "relations": [], "summaries": {}}
+
+
+def clean_summaries(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v).strip() for k, v in raw.items() if isinstance(v, str) and v.strip()}
+
+
+def render_story_so_far(graph: dict[str, Any], chapters: list[dict[str, Any]], max_chars: int,
+                        until: str | None = None) -> str:
+    """Summaries of the chapters before ``until`` (all chapters if None).
+
+    When they don't fit in ``max_chars``, the chapters closest to ``until``
+    are kept, because they matter most for what happens next.
+    """
+    summaries = graph.get("summaries") or {}
+    lines = []
+    for c in chapters:
+        if until is not None and c["id"] == until:
+            break
+        if summaries.get(c["id"]):
+            lines.append(f"- {c.get('title') or c['id']}: {summaries[c['id']]}")
+    if max_chars <= 0:
+        return ""
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        if used + len(line) > max_chars:
+            if not kept:
+                kept.append(line[: max_chars])
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return "\n".join(reversed(kept))
 
 
 def parse_json_answer(answer: str) -> dict[str, Any]:
@@ -70,6 +121,9 @@ def normalize_entity(raw: dict[str, Any]) -> dict[str, Any]:
         "description": str(raw.get("description") or "").strip(),
         "facts": [str(f).strip() for f in raw.get("facts") or [] if str(f).strip()],
         "pinned": bool(raw.get("pinned", False)),
+        "fields": {str(k): str(v).strip() for k, v in (raw.get("fields") or {}).items()
+                   if isinstance(v, (str, int, float)) and str(v).strip()}
+        if isinstance(raw.get("fields"), dict) else {},
     }
 
 
@@ -134,6 +188,11 @@ def render_context(graph: dict[str, Any], text: str, max_chars: int) -> str:
             line += f", also called {', '.join(e['aliases'])}"
         if e.get("description"):
             line += f": {e['description']}"
+        fields = e.get("fields") or {}
+        if fields:
+            labels = dict(ENTITY_FIELDS.get(e["type"], []))
+            line += " " + "; ".join(f"{labels.get(k, k.replace('_', ' ').capitalize())}: {v}"
+                                    for k, v in fields.items())
         if e.get("facts"):
             line += " Facts: " + "; ".join(e["facts"])
         if used + len(line) > max_chars:
