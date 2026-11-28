@@ -96,7 +96,17 @@ async def manifest():
     return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json")
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+class _RevalidatedStatic(StaticFiles):
+    """Static files that the browser must re-check on every load (cheap, thanks to
+    ETags), so an updated app never runs with an old app.js or style.css."""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
+app.mount("/static", _RevalidatedStatic(directory=STATIC), name="static")
 
 
 # ---------- config ----------
