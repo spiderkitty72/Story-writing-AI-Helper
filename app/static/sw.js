@@ -5,7 +5,7 @@
 // API responses are NEVER cached: they hold your private story and depend on
 // who is logged in. Pages are fetched from the network first, so a new
 // version of the app (or a login page) is always used when online.
-const CACHE = "story-helper-v1";
+const CACHE = "story-helper-v2";
 const SHELL = ["/", "/static/app.js", "/static/style.css", "/manifest.webmanifest",
   "/static/icons/icon-192.png", "/static/icons/icon-512.png"];
 
@@ -26,7 +26,7 @@ self.addEventListener("fetch", (e) => {
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/auth") ||
       url.pathname.startsWith("/login") || url.pathname.startsWith("/logout")) return; // never cached
   e.respondWith(
-    fetch(req).then((res) => {
+    fetch(req, { cache: "no-cache" }).then((res) => {
       // keep a copy of the shell for offline use; skip redirects (e.g. to a login page) and errors
       if (res.ok && !res.redirected && res.type === "basic" && SHELL.includes(url.pathname)) {
         const copy = res.clone();

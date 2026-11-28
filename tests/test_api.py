@@ -354,3 +354,8 @@ def test_pwa_files(client):
     assert sw.status_code == 200 and "/api/" in sw.text
     m = client.get("/manifest.webmanifest").json()
     assert m["display"] == "standalone" and m["icons"]
+
+
+def test_static_files_are_revalidated(client):
+    r = client.get("/static/app.js")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
